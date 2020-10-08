@@ -1,30 +1,17 @@
-# Package Name
+# admittance_controller
 
-Simple explanation of your package
+Admittance Control on a 6-DOF Manipulator using a FT Sensor 
 
-## Getting Started
-
-Writing some informations about how to getting started with your package
-
-### Dependencies
-
-Writing all the external dependencies
-
-### Prerequisites
-
-Writing the prerequisites command in order to install
 
 ## Running the tests
 
-Write the commands required to run the tests
+Launch tested on UR10e:
 
 ```
-roslaunch ...
+roslaunch admittance_controller ur10e_admittance_controller.launch
 ```
 
 ## Version
-
-Write all the versions of your softwares
 
 * **ROS:** Melodic+
 
