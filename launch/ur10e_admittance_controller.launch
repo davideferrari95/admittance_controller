@@ -1,0 +1,31 @@
+<launch>
+
+  <!--	Arguments	 -->
+
+  <arg name="topic_force_sensor"           			default="/wrench"/>
+  <arg name="topic_joint_states"          			default="/joint_states"/>
+  <arg name="topic_tf"          								default="/tf"/>
+  <arg name="topic_joint_trajectory"     				default="/scaled_pos_joint_traj_controller/command"/>
+  <arg name="topic_action_trajectory"     			default="/scaled_pos_joint_traj_controller/follow_joint_trajectory"/>
+  <arg name="topic_joint_group_vel_controller"	default="/joint_group_vel_controller/command"/>
+  <arg name="topic_compute_ik_client"						default="/compute_ik"/>
+  <arg name="topic_compute_fk_client"						default="/compute_fk"/>
+  <arg name="admittance_parameters_file"				default="$(find admittance_controller)/config/ur10e_parameters.yaml"/>
+
+	<!--	Node	-->
+
+  <node pkg="admittance_controller" name="admittance_controller_Node" type="admittance_controller_Node" output="screen">
+		<param name="topic_force_sensor"               	value="$(arg topic_force_sensor)"/>
+    <param name="topic_joint_states"                value="$(arg topic_joint_states)"/>
+		<param name="topic_tf"                					value="$(arg topic_tf)"/>
+    <param name="topic_joint_trajectory"            value="$(arg topic_joint_trajectory)"/>
+    <param name="topic_action_trajectory"          	value="$(arg topic_action_trajectory)"/>
+    <param name="topic_joint_group_vel_controller"	value="$(arg topic_joint_group_vel_controller)"/>
+		<param name="topic_compute_ik_client"           value="$(arg topic_compute_ik_client)"/>
+		<param name="topic_compute_fk_client"           value="$(arg topic_compute_fk_client)"/>
+    <rosparam file="$(arg admittance_parameters_file)" command="load"/>
+	</node>
+
+</launch>
+
+
