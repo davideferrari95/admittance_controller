@@ -9,11 +9,11 @@ admittance_controller::admittance_controller(
     std::string topic_joint_trajectory_publisher, std::string topic_action_trajectory_publisher, std::string topic_joint_group_vel_controller_publisher,
     std::string topic_compute_ik_client, std::string topic_compute_fk_client,
     std::vector<double> mass_model_matrix, std::vector<double> damping_model_matrix, 
-    double maximum_velocity, double maximum_acceleration, 
-    std::vector<double> workspace_limits):
+    std::vector<double> workspace_limits, std::vector<double> joint_limits,
+    std::vector<double> maximum_velocity, std::vector<double> maximum_acceleration):
 
-    nh(n), loop_rate(ros_rate), mass_matrix(mass_model_matrix.data()), damping_matrix(damping_model_matrix.data()), ws_limits(workspace_limits.data()),
-    max_vel(maximum_velocity), max_acc(maximum_acceleration) {
+    nh(n), loop_rate(ros_rate), mass_matrix(mass_model_matrix.data()), damping_matrix(damping_model_matrix.data()), 
+    workspace_lim(workspace_limits.data()), joint_lim(joint_limits.data()), max_vel(maximum_velocity.data()), max_acc(maximum_acceleration.data()) {
 
     // ---- ROS SUBSCRIBERS ---- //
     force_sensor_subscriber = nh.subscribe(topic_force_sensor_subscriber, 1, &admittance_controller::force_sensor_Callback, this);
@@ -30,6 +30,15 @@ admittance_controller::admittance_controller(
     // ---- ROS SERVICES ---- //
     compute_ik_client = nh.serviceClient<moveit_msgs::GetPositionIK>(topic_compute_ik_client);
     compute_fk_client = nh.serviceClient<moveit_msgs::GetPositionFK>(topic_compute_fk_client);
+
+    // Initializing the Class Variables
+    external_wrench.setZero();
+    arm_desired_twist.setZero();
+
+    // -- MoveIt Robot Model -- //
+    robot_model_loader = new robot_model_loader::RobotModelLoader ("robot_description");
+
+    
 
 }
 
@@ -56,6 +65,11 @@ void admittance_controller::tf_Callback (const tf2_msgs::TFMessage::ConstPtr &ms
     tf = *msg;
 
 }
+
+
+//----------------------------------------------------- FUNCTIONS ------------------------------------------------------//
+
+
 
 //-------------------------------------------------------- MAIN --------------------------------------------------------//
 
