@@ -5,9 +5,8 @@
 
 admittance_controller::admittance_controller(   
     ros::NodeHandle &n, ros::Rate ros_rate,   
-    std::string topic_force_sensor_subscriber, std::string topic_joint_states_subscriber, std::string topic_tf_subscriber,
+    std::string topic_force_sensor_subscriber, std::string topic_joint_states_subscriber,
     std::string topic_joint_trajectory_publisher, std::string topic_action_trajectory_publisher, std::string topic_joint_group_vel_controller_publisher,
-    std::string topic_compute_ik_client, std::string topic_compute_fk_client,
     std::vector<double> mass_model_matrix, std::vector<double> damping_model_matrix, 
     std::vector<double> workspace_limits, std::vector<double> joint_limits,
     std::vector<double> maximum_velocity, std::vector<double> maximum_acceleration):
@@ -18,7 +17,6 @@ admittance_controller::admittance_controller(
     // ---- ROS SUBSCRIBERS ---- //
     force_sensor_subscriber = nh.subscribe(topic_force_sensor_subscriber, 1, &admittance_controller::force_sensor_Callback, this);
     joint_states_subscriber = nh.subscribe(topic_joint_states_subscriber, 1, &admittance_controller::joint_states_Callback, this);
-    tf_subscriber = nh.subscribe(topic_tf_subscriber, 1, &admittance_controller::tf_Callback, this);
     
     // ---- ROS PUBLISHERS ---- //
     joint_trajectory_publisher = nh.advertise<trajectory_msgs::JointTrajectory>(topic_joint_trajectory_publisher, 1);
@@ -26,10 +24,6 @@ admittance_controller::admittance_controller(
 
     // ---- ROS ACTIONS ---- //
     trajectory_client = new actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction>(topic_action_trajectory_publisher, true);
-
-    // ---- ROS SERVICES ---- //
-    compute_ik_client = nh.serviceClient<moveit_msgs::GetPositionIK>(topic_compute_ik_client);
-    compute_fk_client = nh.serviceClient<moveit_msgs::GetPositionFK>(topic_compute_fk_client);
 
     // Initializing the Class Variables
     external_wrench.setZero();
@@ -57,12 +51,6 @@ void admittance_controller::force_sensor_Callback (const geometry_msgs::WrenchSt
 void admittance_controller::joint_states_Callback (const sensor_msgs::JointState::ConstPtr &msg) {
 
     joint_state = *msg;
-
-}
-
-void admittance_controller::tf_Callback (const tf2_msgs::TFMessage::ConstPtr &msg) {
-
-    tf = *msg;
 
 }
 
