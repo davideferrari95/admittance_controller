@@ -12,10 +12,10 @@
 #include "control_msgs/FollowJointTrajectoryAction.h"
 
 #include "moveit/robot_model_loader/robot_model_loader.h"
+#include "moveit/robot_model/robot_model.h"
+#include "moveit/robot_state/robot_state.h"
 
-#include "eigen3/Eigen/Core"
-#include "eigen3/Eigen/Geometry"
-#include "eigen3/Eigen/Dense"
+#include "eigen3/Eigen/Eigen"
 
 
 using namespace Eigen;
@@ -47,7 +47,7 @@ class admittance_controller {
 
         // -- Admittance Parameters -- //
         Matrix6d mass_matrix, damping_matrix;
-
+        
         // -- Admittance IO -- //
         Vector6d external_wrench, arm_desired_twist;
         
@@ -56,21 +56,25 @@ class admittance_controller {
 
         // -- MoveIt Robot Model -- //
         robot_model_loader::RobotModelLoader *robot_model_loader;
+        robot_model::RobotModelPtr kinematic_model;
+        robot_state::RobotState *kinematic_state;
+        const robot_state::JointModelGroup *joint_model_group;
+        const std::vector<std::string> *joint_names;
 
 
         ros::Subscriber force_sensor_subscriber, joint_states_subscriber;
-        ros::Publisher  joint_trajectory_publisher, joint_group_vel_controller_publisher;
+        ros::Publisher joint_trajectory_publisher, joint_group_vel_controller_publisher;
         
         actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction> *trajectory_client;
 		control_msgs::FollowJointTrajectoryGoal trajectory_goal;
 
         sensor_msgs::JointState joint_state;
-        geometry_msgs::WrenchStamped force_sensor;
+        std::vector<double> joint_position, joint_velocity;
 
         void force_sensor_Callback (const geometry_msgs::WrenchStamped::ConstPtr &);
         void joint_states_Callback (const sensor_msgs::JointState::ConstPtr &);
 
-        void compute_admittance();
+        Eigen::Matrix4d compute_ik (std::vector<double> joint_position);
 
 };
 

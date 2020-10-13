@@ -13,6 +13,8 @@
   <depend>roscpp</depend>
   <depend>eigen</depend>
   <depend>actionlib</depend>
+  <depend>moveit_core</depend>
+  <depend>moveit_ros_planning_interface</depend>
 
   <depend>std_msgs</depend>
   <depend>trajectory_msgs</depend>
