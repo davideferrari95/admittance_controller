@@ -55,12 +55,14 @@ class admittance_controller {
         Vector6d workspace_lim, joint_lim, max_vel, max_acc;
 
         // -- MoveIt Robot Model -- //
-        robot_model_loader::RobotModelLoader *robot_model_loader;
+        robot_model_loader::RobotModelLoader robot_model_loader;
         robot_model::RobotModelPtr kinematic_model;
-        robot_state::RobotState *kinematic_state;
+        robot_state::RobotStatePtr kinematic_state;
         const robot_state::JointModelGroup *joint_model_group;
-        const std::vector<std::string> *joint_names;
+        std::vector<std::string> joint_names;
+        Eigen::MatrixXd jacobian_arm;
 
+        bool force_callback, joint_state_callback;
 
         ros::Subscriber force_sensor_subscriber, joint_states_subscriber;
         ros::Publisher joint_trajectory_publisher, joint_group_vel_controller_publisher;
@@ -75,6 +77,11 @@ class admittance_controller {
         void joint_states_Callback (const sensor_msgs::JointState::ConstPtr &);
 
         Eigen::Matrix4d compute_ik (std::vector<double> joint_position);
+        Eigen::MatrixXd compute_arm_jacobian (std::vector<double> joint_position);
+
+        void wait_for_init();
+        void compute_admittance();
+        void sending_velocity_to_robot (Vector6d velocity);
 
 };
 

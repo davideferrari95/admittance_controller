@@ -41,7 +41,7 @@ int main(int argc, char **argv) {
     while (ros::ok()) {
 
         ac.spinner();
-        ros::shutdown();
+        // ros::shutdown();
 
     }
 
