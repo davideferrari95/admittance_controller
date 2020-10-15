@@ -3,6 +3,7 @@
   <!--	Arguments	 -->
 
   <arg name="load_robot_model"           			  default="false"/>
+  <arg name="vrep_simulation"           			  default="false"/>
 
   <arg name="topic_force_sensor"           			default="/wrench"/>
   <arg name="topic_joint_states"          			default="/joint_states"/>
@@ -28,9 +29,8 @@
     <param name="topic_action_trajectory"          	value="$(arg topic_action_trajectory)"/>
     <param name="topic_joint_group_vel_controller"	value="$(arg topic_joint_group_vel_controller)"/>
     <param name="use_feedback_velocity"	            value="$(arg use_feedback_velocity)"/>
+    <param name="vrep_simulation"	                  value="$(arg vrep_simulation)"/>
     <rosparam file="$(arg admittance_parameters_file)" command="load"/>
 	</node>
 
 </launch>
-
-

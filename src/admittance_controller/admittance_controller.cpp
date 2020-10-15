@@ -16,6 +16,7 @@ admittance_controller::admittance_controller(
 
     // ---- LOAD PARAMETERS ---- //
     if (!nh.param<bool>("/admittance_controller_Node/use_feedback_velocity", use_feedback_velocity, false)) {ROS_ERROR("Couldn't retrieve the Feedback Velocity value.");}
+    if (!nh.param<bool>("/admittance_controller_Node/vrep_simulation", vrep_simulation, false)) {ROS_ERROR("Couldn't retrieve the VREP Simulation value.");}
 
     // ---- ROS SUBSCRIBERS ---- //
     force_sensor_subscriber = nh.subscribe(topic_force_sensor_subscriber, 1, &admittance_controller::force_sensor_Callback, this);
@@ -94,10 +95,22 @@ void admittance_controller::joint_states_Callback (const sensor_msgs::JointState
 //----------------------------------------------------- FUNCTIONS ------------------------------------------------------//
 
 
-Eigen::Matrix4d admittance_controller::compute_fk (std::vector<double> joint_position) {
+Eigen::Matrix4d admittance_controller::compute_fk (std::vector<double> joint_position, std::vector<double> joint_velocity) {
 
-    // Set the Real Value of the Joint to the Kinematic Model of Moveit!
-    kinematic_state->setJointGroupPositions(joint_model_group, joint_position);
+    if (vrep_simulation) { //MoveIt! Model istn't updated
+
+        // Set the Real Value of Joint Position and Velocity to the MoveIt! Kinematic Model
+        kinematic_state->setJointGroupPositions(joint_model_group, joint_position);
+        kinematic_state->setJointGroupVelocities(joint_model_group, joint_velocity);
+
+    } else {
+
+        // Copy the Joint Position and Velocity from the MoveIt! Kinematic Model
+        kinematic_state->copyJointGroupPositions(joint_model_group, joint_position);
+        kinematic_state->copyJointGroupVelocities(joint_model_group, joint_velocity);
+
+    }
+    
     kinematic_state->enforceBounds();
 
     // Computing the actual position of the end-effector using Forward Kinematic
@@ -120,11 +133,21 @@ Eigen::Matrix4d admittance_controller::compute_fk (std::vector<double> joint_pos
 
 }
 
-Eigen::MatrixXd admittance_controller::compute_arm_jacobian (std::vector<double> joint_position) {
+Eigen::MatrixXd admittance_controller::compute_arm_jacobian (std::vector<double> joint_position, std::vector<double> joint_velocity) {
 
-    // Set the Real Value of the Joint to the Kinematic Model of Moveit!
-    kinematic_state->setJointGroupPositions(joint_model_group, joint_position);
-    kinematic_state->enforceBounds();
+    if (vrep_simulation) { // MoveIt! Model istn't Updated in VREP
+
+        // Set the Real Value of Joint Position and Velocity to the MoveIt! Kinematic Model
+        kinematic_state->setJointGroupPositions(joint_model_group, joint_position);
+        kinematic_state->setJointGroupVelocities(joint_model_group, joint_velocity);
+
+    } else {
+
+        // Copy the Joint Position and Velocity from the MoveIt! Kinematic Model
+        kinematic_state->copyJointGroupPositions(joint_model_group, joint_position);
+        kinematic_state->copyJointGroupVelocities(joint_model_group, joint_velocity);
+
+    }
 
     // Computing the Jacobian of the arm
     Eigen::Vector3d reference_point_position(0.0,0.0,0.0);
@@ -146,11 +169,16 @@ void admittance_controller::compute_admittance (void) {
         Vector6d joint_velocity_eigen = Eigen::Map<Vector6d>(joint_velocity.data());
 
         // Compute Cartesian Velocity
-        J = compute_arm_jacobian(joint_position);
+        J = compute_arm_jacobian(joint_position, joint_velocity);
         x_dot = J * joint_velocity_eigen;
         // ROS_INFO_STREAM_ONCE("Manipulator Jacobian: " << std::endl << std::endl << J << std::endl);
         // ROS_INFO_STREAM_ONCE("First Velocity: " << std::endl << std::endl << x_dot << std::endl);
     
+    } else {
+        
+        // Use the Cartesian Speed obtained the last cycle
+        x_dot = x_dot;
+        
     }
 
     // Compute Acceleration with Admittance
@@ -160,7 +188,7 @@ void admittance_controller::compute_admittance (void) {
     double a_acc_norm = (arm_desired_accelaration.segment(0, 3)).norm();
 
     if (a_acc_norm > max_acc[0]) {
-        ROS_WARN_STREAM_THROTTLE(1, "Admittance generates high arm accelaration!" << " norm: " << a_acc_norm);
+        ROS_WARN_STREAM_THROTTLE(2, "Admittance generates high arm accelaration!" << " norm: " << a_acc_norm);
         arm_desired_accelaration.segment(0, 3) *= (max_acc[0] / a_acc_norm);
     }
 
@@ -172,7 +200,7 @@ void admittance_controller::compute_admittance (void) {
     double norm_vel_des = (x_dot.segment(0, 3)).norm();
 
     if (norm_vel_des > max_vel[0]) {
-        ROS_WARN_STREAM_THROTTLE(1, "Admittance generate fast arm movements! velocity norm: " << norm_vel_des);
+        ROS_WARN_STREAM_THROTTLE(2, "Admittance generate fast arm movements! velocity norm: " << norm_vel_des);
         x_dot.segment(0, 3) *= (max_vel[0] / norm_vel_des);
     }
 

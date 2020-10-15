@@ -5,7 +5,8 @@
   <arg name="load_robot_description"  default="true"/>
   <arg name="limited"           			default="false"/>
   
-  <!-- Load the URDF, SRDF and other .yaml configuration files on the param server -->
+  <!--  Load the URDF, SRDF and other .yaml configuration files on the param server  -->
+
   <include file="$(find ur10_e_moveit_config)/launch/planning_context.launch">
     <arg name="load_robot_description" value="$(arg load_robot_description)"/>
     <arg name="limited" value="$(arg limited)"/>
