@@ -14,6 +14,9 @@ admittance_controller::admittance_controller(
     nh(n), loop_rate(ros_rate), mass_matrix(mass_model_matrix.data()), damping_matrix(damping_model_matrix.data()), 
     workspace_lim(workspace_limits.data()), joint_lim(joint_limits.data()), max_vel(maximum_velocity.data()), max_acc(maximum_acceleration.data()) {
 
+    // ---- LOAD PARAMETERS ---- //
+    if (!nh.param<bool>("/admittance_controller_Node/use_feedback_velocity", use_feedback_velocity, false)) {ROS_ERROR("Couldn't retrieve the Feedback Velocity value.");}
+
     // ---- ROS SUBSCRIBERS ---- //
     force_sensor_subscriber = nh.subscribe(topic_force_sensor_subscriber, 1, &admittance_controller::force_sensor_Callback, this);
     joint_states_subscriber = nh.subscribe(topic_joint_states_subscriber, 1, &admittance_controller::joint_states_Callback, this);
@@ -27,17 +30,24 @@ admittance_controller::admittance_controller(
 
     // Initializing the Class Variables
     external_wrench.setZero();
-    arm_desired_twist.setZero();
+    x_dot.setZero();
+    q_dot.setZero();
+
     force_callback = false;
     joint_state_callback = false;
+    first_cycle = true;
 
-
-    // -- MoveIt Robot Model -- //
+    // ---- MoveIt Robot Model ---- //
     robot_model_loader = robot_model_loader::RobotModelLoader ("robot_description");
     kinematic_model = robot_model_loader.getModel();
     kinematic_state = robot_state::RobotStatePtr(new robot_state::RobotState(kinematic_model));
+    kinematic_state->setToDefaultValues();
     joint_model_group = kinematic_model->getJointModelGroup("manipulator");
-    joint_names = joint_model_group->getVariableNames();
+    joint_names = joint_model_group->getJointModelNames();
+
+    // ---- DEBUG PRINT ---- //
+    // ROS_INFO_STREAM("Mass Matrix:" << std::endl << std::endl << mass_matrix << std::endl);
+    // ROS_INFO_STREAM("Damping Matrix:" << std::endl << std::endl << damping_matrix << std::endl);
 
 }
 
@@ -58,8 +68,8 @@ void admittance_controller::force_sensor_Callback (const geometry_msgs::WrenchSt
     external_wrench[4] = force_sensor.wrench.torque.y;
     external_wrench[5] = force_sensor.wrench.torque.z;
     
-    std::cout << "Force   ->  x: " << external_wrench[0] << " y: " << external_wrench[1] << " z: " << external_wrench[2] << std::endl;
-    std::cout << "Torque  ->  x: " << external_wrench[3] << " y: " << external_wrench[4] << " z: " << external_wrench[5] << std::endl; 
+    // std::cout << "Force   ->  x: " << external_wrench[0] << " y: " << external_wrench[1] << " z: " << external_wrench[2] << std::endl;
+    // std::cout << "Torque  ->  x: " << external_wrench[3] << " y: " << external_wrench[4] << " z: " << external_wrench[5] << std::endl; 
 
     for (int i = 0; i < external_wrench.size(); i++) {if(fabs(external_wrench[i]) < 5.0) {external_wrench[i] = 0.0;}}
     
@@ -84,29 +94,18 @@ void admittance_controller::joint_states_Callback (const sensor_msgs::JointState
 //----------------------------------------------------- FUNCTIONS ------------------------------------------------------//
 
 
-Eigen::Matrix4d admittance_controller::compute_ik (std::vector<double> joint_position) {
+Eigen::Matrix4d admittance_controller::compute_fk (std::vector<double> joint_position) {
 
-    // Pasting the kinematic model to the Joint Groups in MoveIt!
-    kinematic_state->copyJointGroupPositions(joint_model_group, joint_position);
+    // Set the Real Value of the Joint to the Kinematic Model of Moveit!
+    kinematic_state->setJointGroupPositions(joint_model_group, joint_position);
     kinematic_state->enforceBounds();
 
-    // Computing the Jacobian of the arm
-    Eigen::Vector3d reference_point_position(0.0,0.0,0.0);
-    Eigen::MatrixXd jacobian;
-    kinematic_state->getJacobian(joint_model_group, kinematic_state->getLinkModel(joint_model_group->getLinkModelNames().back()), reference_point_position, jacobian);
-
-    // Computing the actual position of the end-effector using the arm Jacobian
+    // Computing the actual position of the end-effector using Forward Kinematic
     const Eigen::Affine3d& end_effector_state = kinematic_state->getGlobalLinkTransform("ee_link");
 
     // Compute the pose of the end-effector with respect to the /prbt_base frame
     Eigen::Vector3d translation_vector = end_effector_state.translation();
     Eigen::Matrix3d rotation_matrix = end_effector_state.rotation();
-
-    // Computing current RPY of the EE
-    Eigen::Vector3d euler_angles_ee = rotation_matrix.eulerAngles(2, 1, 0);
-    double roll_ee = euler_angles_ee[2];
-    double pitch_ee = euler_angles_ee[1];
-    double yaw_ee = euler_angles_ee[0];
 
     //Transformation Matrix
     Eigen::Matrix4d transformation_matrix;
@@ -123,8 +122,8 @@ Eigen::Matrix4d admittance_controller::compute_ik (std::vector<double> joint_pos
 
 Eigen::MatrixXd admittance_controller::compute_arm_jacobian (std::vector<double> joint_position) {
 
-    // Pasting the kinematic model to the Joint Groups in MoveIt!
-    kinematic_state->copyJointGroupPositions(joint_model_group, joint_position);
+    // Set the Real Value of the Joint to the Kinematic Model of Moveit!
+    kinematic_state->setJointGroupPositions(joint_model_group, joint_position);
     kinematic_state->enforceBounds();
 
     // Computing the Jacobian of the arm
@@ -136,19 +135,26 @@ Eigen::MatrixXd admittance_controller::compute_arm_jacobian (std::vector<double>
 
 }
 
-void admittance_controller::compute_admittance() {
+void admittance_controller::compute_admittance (void) {
 
     ros::spinOnce();
 
     Vector6d arm_desired_accelaration;
-    Vector6d joint_velocity_eigen = Eigen::Map<Vector6d>(joint_velocity.data());
 
-    // Compute Cartesian Velocity
-    compute_arm_jacobian(joint_position);
-    arm_desired_twist = jacobian_arm * joint_velocity_eigen;
+    if (use_feedback_velocity) {
+
+        Vector6d joint_velocity_eigen = Eigen::Map<Vector6d>(joint_velocity.data());
+
+        // Compute Cartesian Velocity
+        J = compute_arm_jacobian(joint_position);
+        x_dot = J * joint_velocity_eigen;
+        // ROS_INFO_STREAM_ONCE("Manipulator Jacobian: " << std::endl << std::endl << J << std::endl);
+        // ROS_INFO_STREAM_ONCE("First Velocity: " << std::endl << std::endl << x_dot << std::endl);
+    
+    }
 
     // Compute Acceleration with Admittance
-    arm_desired_accelaration = mass_matrix.inverse() * ( - damping_matrix * arm_desired_twist + external_wrench);
+    arm_desired_accelaration = mass_matrix.inverse() * ( - damping_matrix * x_dot + external_wrench);
 
     // Limiting the Accelaration for better stability and safety
     double a_acc_norm = (arm_desired_accelaration.segment(0, 3)).norm();
@@ -160,7 +166,20 @@ void admittance_controller::compute_admittance() {
 
     // Integrate for Velocity Based Interface
     ros::Duration duration = loop_rate.expectedCycleTime();
-    arm_desired_twist  += arm_desired_accelaration * duration.toSec();
+    x_dot  += arm_desired_accelaration * duration.toSec();
+
+    // Limiting Velocity of the arm along x, y, and z axis
+    double norm_vel_des = (x_dot.segment(0, 3)).norm();
+
+    if (norm_vel_des > max_vel[0]) {
+        ROS_WARN_STREAM_THROTTLE(1, "Admittance generate fast arm movements! velocity norm: " << norm_vel_des);
+        x_dot.segment(0, 3) *= (max_vel[0] / norm_vel_des);
+    }
+
+    // Inverse Kinematic for Joint Velocity
+    q_dot = J.inverse() * x_dot;
+
+    ROS_INFO_STREAM_THROTTLE(2, "Desired Velocity: " << q_dot);
 
 }
 
@@ -190,8 +209,15 @@ void admittance_controller::sending_velocity_to_robot (Vector6d velocity) {
 
 void admittance_controller::wait_for_init (void) {
 
-    // Wait for the Callback
-    while (!force_callback || !joint_state_callback) {ros::spinOnce;}
+    // Wait for the Callbacks
+    while (!force_callback || !joint_state_callback) {
+
+        ros::spinOnce();
+        
+        if (!force_callback) {ROS_WARN_THROTTLE(2, "Wait for Force Sensor");}
+        if (!joint_state_callback) {ROS_WARN_THROTTLE(2, "Wait for Joint State feedback");}
+    
+    }
 
     // TODO: Wait for Robot Model 
 
@@ -204,12 +230,20 @@ void admittance_controller::wait_for_init (void) {
 
 void admittance_controller::spinner (void) {
 
-    wait_for_init();
+    if (first_cycle) {
 
-    compute_admittance();
-    sending_velocity_to_robot(arm_desired_twist);
+        wait_for_init();
+        ros::spinOnce();
 
-    ros::spinOnce();
-    loop_rate.sleep();
+        first_cycle = false;
+    
+    } else {
+
+        compute_admittance();
+        sending_velocity_to_robot(q_dot);
+
+        ros::spinOnce();
+        loop_rate.sleep();
+    }
     
 }

@@ -5,7 +5,7 @@ int main(int argc, char **argv) {
     ros::init(argc, argv, "admittance_controller_Node");
 
     ros::NodeHandle nh;
-    ros::Rate loop_rate = 100;
+    ros::Rate loop_rate = 1000;
 
     // Parameters
     std::string topic_force_sensor_subscriber, topic_joint_states_subscriber;

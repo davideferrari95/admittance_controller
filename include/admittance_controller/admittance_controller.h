@@ -45,24 +45,25 @@ class admittance_controller {
         ros::NodeHandle nh;
         ros::Rate loop_rate;
 
-        // -- Admittance Parameters -- //
+        // ---- Admittance Parameters ---- //
         Matrix6d mass_matrix, damping_matrix;
         
-        // -- Admittance IO -- //
-        Vector6d external_wrench, arm_desired_twist;
+        // ---- Admittance IO ---- //
+        Vector6d external_wrench, x_dot, q_dot;
         
-        // -- Limits -- //
+        // ---- Limits ---- //
         Vector6d workspace_lim, joint_lim, max_vel, max_acc;
 
-        // -- MoveIt Robot Model -- //
+        // ---- MoveIt Robot Model ---- //
         robot_model_loader::RobotModelLoader robot_model_loader;
         robot_model::RobotModelPtr kinematic_model;
         robot_state::RobotStatePtr kinematic_state;
         const robot_state::JointModelGroup *joint_model_group;
         std::vector<std::string> joint_names;
-        Eigen::MatrixXd jacobian_arm;
+        Eigen::MatrixXd J;
 
-        bool force_callback, joint_state_callback;
+        bool force_callback, joint_state_callback, use_feedback_velocity;
+        bool first_cycle;
 
         ros::Subscriber force_sensor_subscriber, joint_states_subscriber;
         ros::Publisher joint_trajectory_publisher, joint_group_vel_controller_publisher;
@@ -76,11 +77,11 @@ class admittance_controller {
         void force_sensor_Callback (const geometry_msgs::WrenchStamped::ConstPtr &);
         void joint_states_Callback (const sensor_msgs::JointState::ConstPtr &);
 
-        Eigen::Matrix4d compute_ik (std::vector<double> joint_position);
+        Eigen::Matrix4d compute_fk (std::vector<double> joint_position);
         Eigen::MatrixXd compute_arm_jacobian (std::vector<double> joint_position);
 
-        void wait_for_init();
-        void compute_admittance();
+        void wait_for_init (void);
+        void compute_admittance (void);
         void sending_velocity_to_robot (Vector6d velocity);
 
 };
