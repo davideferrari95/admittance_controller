@@ -33,6 +33,7 @@ class admittance_controller {
             std::string topic_force_sensor_subscriber, std::string topic_joint_states_subscriber,
             std::string topic_joint_trajectory_publisher, std::string topic_action_trajectory_publisher, std::string topic_joint_group_vel_controller_publisher, 
             std::vector<double> mass_model_matrix, std::vector<double> damping_model_matrix, 
+            double force_dead_zone, double torque_dead_zone, double admittance_weight,
             std::vector<double> workspace_limits, std::vector<double> joint_limits,
             std::vector<double> maximum_velocity, std::vector<double> maximum_acceleration);
 
@@ -47,6 +48,7 @@ class admittance_controller {
 
         // ---- Admittance Parameters ---- //
         Matrix6d mass_matrix, damping_matrix;
+        double force_dead_zone, torque_dead_zone, admittance_weight;
         
         // ---- Admittance IO ---- //
         Vector6d external_wrench, x_dot, q_dot;
@@ -62,8 +64,8 @@ class admittance_controller {
         std::vector<std::string> joint_names;
         Eigen::MatrixXd J;
 
-        bool force_callback, joint_state_callback, first_cycle;
-        bool use_feedback_velocity, vrep_simulation;
+        bool force_callback, joint_state_callback;
+        bool use_feedback_velocity, use_ur_real_robot;
 
         ros::Subscriber force_sensor_subscriber, joint_states_subscriber;
         ros::Publisher joint_trajectory_publisher, joint_group_vel_controller_publisher;
@@ -77,12 +79,13 @@ class admittance_controller {
         void force_sensor_Callback (const geometry_msgs::WrenchStamped::ConstPtr &);
         void joint_states_Callback (const sensor_msgs::JointState::ConstPtr &);
 
+        Matrix6d get_ee_rotation_matrix (std::vector<double> joint_position, std::vector<double> joint_velocity);
         Eigen::Matrix4d compute_fk (std::vector<double> joint_position, std::vector<double> joint_velocity);
         Eigen::MatrixXd compute_arm_jacobian (std::vector<double> joint_position, std::vector<double> joint_velocity);
 
-        void wait_for_init (void);
+        void wait_for_callbacks_initialization (void);
         void compute_admittance (void);
-        void sending_velocity_to_robot (Vector6d velocity);
+        void send_velocity_to_robot (Vector6d velocity);
 
 };
 

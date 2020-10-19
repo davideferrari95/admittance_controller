@@ -2,35 +2,29 @@
 
   <!--	Arguments	 -->
 
-  <arg name="load_robot_model"           			  default="false"/>
-  <arg name="vrep_simulation"           			  default="false"/>
+  <arg name="load_robot_model"      		  default="true"/>
+  <arg name="use_ur_real_robot"	          default="false"/>
+  <arg name="use_feedback_velocity"	      default="false"/>
 
-  <arg name="topic_force_sensor"           			default="/wrench"/>
-  <arg name="topic_joint_states"          			default="/joint_states"/>
-  <arg name="topic_joint_trajectory"     				default="/scaled_pos_joint_traj_controller/command"/>
-  <arg name="topic_action_trajectory"     			default="/scaled_pos_joint_traj_controller/follow_joint_trajectory"/>
-  <arg name="topic_joint_group_vel_controller"	default="/joint_group_vel_controller/command"/>
-  <arg name="use_feedback_velocity"	            default="true"/>
-  <arg name="admittance_parameters_file"				default="$(find admittance_controller)/config/ur10e_parameters.yaml"/>
+  <arg name="topic_names_file"				    default="$(find admittance_controller)/config/ur10e_topic_names.yaml"/>
+  <arg name="admittance_parameters_file"  default="$(find admittance_controller)/config/ur10e_parameters.yaml"/>
 
-	<!--	Loading Robot Parameters on ROS Server	-->
-  
-  <include if="$(arg load_robot_model)" file="$(find admittance_controller)/launch/ur10e_robot_model.launch">
+
+  <!--  Load the URDF, SRDF and other .yaml configuration files on the ROS Param Server  -->
+
+  <include if="$(arg load_robot_model)" file="$(find ur10_e_moveit_config)/launch/planning_context.launch">
     <arg name="load_robot_description" value="true"/>
     <arg name="limited" value="false"/>
   </include>
 
+
   <!--  Admittance Controller Node  -->
   
   <node pkg="admittance_controller" name="admittance_controller_Node" type="admittance_controller_Node" output="screen">
-		<param name="topic_force_sensor"               	value="$(arg topic_force_sensor)"/>
-    <param name="topic_joint_states"                value="$(arg topic_joint_states)"/>
-    <param name="topic_joint_trajectory"            value="$(arg topic_joint_trajectory)"/>
-    <param name="topic_action_trajectory"          	value="$(arg topic_action_trajectory)"/>
-    <param name="topic_joint_group_vel_controller"	value="$(arg topic_joint_group_vel_controller)"/>
-    <param name="use_feedback_velocity"	            value="$(arg use_feedback_velocity)"/>
-    <param name="vrep_simulation"	                  value="$(arg vrep_simulation)"/>
-    <rosparam file="$(arg admittance_parameters_file)" command="load"/>
+    <param name="use_feedback_velocity" value="$(arg use_feedback_velocity)"/>
+    <param name="use_ur_real_robot"     value="$(arg use_ur_real_robot)"/>
+    <rosparam file="$(arg topic_names_file)"            command="load"/>
+    <rosparam file="$(arg admittance_parameters_file)"  command="load"/>
 	</node>
 
 </launch>

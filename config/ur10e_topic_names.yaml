@@ -1,0 +1,10 @@
+# Force Sensor
+topic_force_sensor: "/wrench"
+
+# Position and Velocity Control
+topic_joint_trajectory: "/scaled_pos_joint_traj_controller/command"
+topic_action_trajectory: "/scaled_pos_joint_traj_controller/follow_joint_trajectory"
+topic_joint_group_vel_controller: "/joint_group_vel_controller/command"
+
+# Joint State Feedback
+topic_joint_states: "/joint_states"

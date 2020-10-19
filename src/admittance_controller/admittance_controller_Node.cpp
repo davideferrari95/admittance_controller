@@ -5,7 +5,7 @@ int main(int argc, char **argv) {
     ros::init(argc, argv, "admittance_controller_Node");
 
     ros::NodeHandle nh;
-    ros::Rate loop_rate = 1000;
+    ros::Rate loop_rate = 500;
 
     // Parameters
     std::string topic_force_sensor_subscriber, topic_joint_states_subscriber;
@@ -13,6 +13,9 @@ int main(int argc, char **argv) {
 
     std::vector<double> mass_model_matrix, damping_model_matrix;
     std::vector<double> joint_limits, workspace_limits, maximum_velocity, maximum_acceleration;
+
+    double force_dead_zone, torque_dead_zone;
+    double admittance_weight;
 
 
     // ---- LOADING "TOPIC NAME" PARAMETERS FROM THE ROS SERVER ---- //
@@ -26,6 +29,10 @@ int main(int argc, char **argv) {
     // ---- LOADING "ADMITTANCE" PARAMETERS FROM THE ROS SERVER ---- //
     if (!nh.getParam("/admittance_controller_Node/mass_matrix", mass_model_matrix)) {ROS_ERROR("Couldn't retrieve the Mass Matrix parameter.");}
     if (!nh.getParam("/admittance_controller_Node/damping_matrix", damping_model_matrix)) {ROS_ERROR("Couldn't retrieve the Damping Matrix parameter.");}
+    if (!nh.param("/admittance_controller_Node/force_dead_zone", force_dead_zone, 3.0)) {ROS_ERROR("Couldn't retrieve the Force Dead Zone parameter.");}
+    if (!nh.param("/admittance_controller_Node/torque_dead_zone", torque_dead_zone, 3.0)) {ROS_ERROR("Couldn't retrieve the Torque Dead Zone parameter.");}
+    if (!nh.param("/admittance_controller_Node/admittance_weight", admittance_weight, 1.0)) {ROS_ERROR("Couldn't retrieve the Admittance Weight parameter.");}
+
     
     // ---- LOADING "SAFETY" PARAMETERS FROM THE ROS SERVER ---- //
     if (!nh.getParam("/admittance_controller_Node/workspace_limits", workspace_limits)) {ROS_ERROR("Couldn't retrieve the Workspace Limits parameter.");}
@@ -36,7 +43,8 @@ int main(int argc, char **argv) {
     admittance_controller ac (
         nh, loop_rate, topic_force_sensor_subscriber, topic_joint_states_subscriber,
         topic_joint_trajectory_publisher, topic_action_trajectory_publisher, topic_joint_group_vel_controller_publisher,
-        mass_model_matrix, damping_model_matrix, workspace_limits, joint_limits, maximum_velocity, maximum_acceleration);
+        mass_model_matrix, damping_model_matrix, force_dead_zone, torque_dead_zone, admittance_weight,
+        workspace_limits, joint_limits, maximum_velocity, maximum_acceleration);
 
     while (ros::ok()) {
 
