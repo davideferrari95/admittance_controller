@@ -35,6 +35,7 @@ admittance_controller::admittance_controller(
     joint_position.resize(6);
     joint_velocity.resize(6);
     external_wrench.setZero();
+    joint_velocity_old.setZero();
     x_dot.setZero();
     q_dot.setZero();
 
@@ -127,7 +128,7 @@ Eigen::Matrix4d admittance_controller::compute_fk (std::vector<double> joint_pos
     kinematic_state->enforceBounds();
 
     // Computing the actual position of the end-effector using Forward Kinematic respect "world"
-    const Eigen::Affine3d& end_effector_state = kinematic_state->getGlobalLinkTransform("ee_link");
+    const Eigen::Affine3d& end_effector_state = kinematic_state->getGlobalLinkTransform("tool0");
 
     // Get the Translation Vector and Rotation Matrix
     Eigen::Vector3d translation_vector = end_effector_state.translation();
@@ -147,6 +148,28 @@ Eigen::Matrix4d admittance_controller::compute_fk (std::vector<double> joint_pos
 
 }
 
+Eigen::MatrixXd admittance_controller::compute_arm_jacobian (std::vector<double> joint_position, std::vector<double> joint_velocity) {
+
+    ros::spinOnce();
+
+    //Update MoveIt! Kinematic Model
+    kinematic_state->setJointGroupPositions(joint_model_group, joint_position);
+    kinematic_state->setJointGroupVelocities(joint_model_group, joint_velocity);
+    kinematic_state->enforceBounds();
+
+    // Computing the Jacobian of the arm
+    Eigen::Vector3d reference_point_position(0.0,0.0,0.0);
+    Eigen::MatrixXd jacobian;
+    // TODO: controllare che joint_model_group->getLinkModelNames().back()) corrisponda a tool0 o ee_link
+    kinematic_state->getJacobian(joint_model_group, kinematic_state->getLinkModel(joint_model_group->getLinkModelNames().back()), reference_point_position, jacobian);
+
+    ROS_DEBUG_STREAM_THROTTLE(2, "Manipulator Jacobian: " << std::endl << std::endl << J << std::endl);
+    ROS_DEBUG_STREAM_THROTTLE(2, "Manipulator Inverse Jacobian: " << std::endl << std::endl << J.inverse() << std::endl);
+
+    return jacobian;
+
+}
+
 Matrix6d admittance_controller::get_ee_rotation_matrix (std::vector<double> joint_position, std::vector<double> joint_velocity) {
 
     ros::spinOnce();
@@ -157,7 +180,7 @@ Matrix6d admittance_controller::get_ee_rotation_matrix (std::vector<double> join
     kinematic_state->enforceBounds();
 
     // Computing the actual position of the end-effector using Forward Kinematic respect "world"
-    const Eigen::Affine3d& end_effector_state = kinematic_state->getGlobalLinkTransform("ee_link");
+    const Eigen::Affine3d& end_effector_state = kinematic_state->getGlobalLinkTransform("tool0");
 
     // Rotation Matrix 6x6
     Matrix6d rotation_matrix;
@@ -178,27 +201,6 @@ Matrix6d admittance_controller::get_ee_rotation_matrix (std::vector<double> join
     ROS_DEBUG_STREAM_THROTTLE(2, "Rotation Matrix 6x6:" << std::endl << std::endl << rotation_matrix << std::endl);
 
     return rotation_matrix;
-
-}
-
-Eigen::MatrixXd admittance_controller::compute_arm_jacobian (std::vector<double> joint_position, std::vector<double> joint_velocity) {
-
-    ros::spinOnce();
-
-    //Update MoveIt! Kinematic Model
-    kinematic_state->setJointGroupPositions(joint_model_group, joint_position);
-    kinematic_state->setJointGroupVelocities(joint_model_group, joint_velocity);
-    kinematic_state->enforceBounds();
-
-    // Computing the Jacobian of the arm
-    Eigen::Vector3d reference_point_position(0.0,0.0,0.0);
-    Eigen::MatrixXd jacobian;
-    kinematic_state->getJacobian(joint_model_group, kinematic_state->getLinkModel(joint_model_group->getLinkModelNames().back()), reference_point_position, jacobian);
-
-    ROS_DEBUG_STREAM_THROTTLE(2, "Manipulator Jacobian: " << std::endl << std::endl << J << std::endl);
-    ROS_DEBUG_STREAM_THROTTLE(2, "Manipulator Inverse Jacobian: " << std::endl << std::endl << J.inverse() << std::endl);
-
-    return jacobian;
 
 }
 
@@ -225,32 +227,18 @@ void admittance_controller::compute_admittance (void) {
     }
 
     // Compute Acceleration with Admittance //FIXME: sensore di forza non allineato alla posizione dell'ee
-    Vector6d arm_desired_accelaration = mass_matrix.inverse() * ( - damping_matrix * x_dot + admittance_weight * 
-                                        (get_ee_rotation_matrix(joint_position, joint_velocity).inverse() * external_wrench));
-
-    // Limiting the Accelaration for better stability and safety
-    double a_acc_norm = (arm_desired_accelaration.segment(0, 3)).norm();
-
-    if (a_acc_norm > max_acc[0]) {
-        ROS_WARN_STREAM_THROTTLE(2, "Admittance generates high arm accelaration!" << " norm: " << a_acc_norm);
-        arm_desired_accelaration.segment(0, 3) *= (max_acc[0] / a_acc_norm);
-    }
+    Vector6d arm_desired_accelaration_cartesian = mass_matrix.inverse() * ( - damping_matrix * x_dot + admittance_weight * 
+                                                  (get_ee_rotation_matrix(joint_position, joint_velocity) * external_wrench));
 
     // Integrate for Velocity Based Interface
     ros::Duration duration = loop_rate.expectedCycleTime();
     ROS_INFO_STREAM_ONCE("Cycle Time: " << duration.toSec()*1000 << " ms");
-    x_dot  += arm_desired_accelaration * duration.toSec();
-
-    // Limiting Velocity of the arm along x, y, and z axis
-    double norm_vel_des = (x_dot.segment(0, 3)).norm();
-
-    if (norm_vel_des > max_vel[0]) {
-        ROS_WARN_STREAM_THROTTLE(2, "Admittance generate fast arm movements! velocity norm: " << norm_vel_des);
-        x_dot.segment(0, 3) *= (max_vel[0] / norm_vel_des);
-    }
+    x_dot  += arm_desired_accelaration_cartesian * duration.toSec();
 
     // Inverse Kinematic for Joint Velocity
     q_dot = J.inverse() * x_dot;
+
+    limit_joint_dynamics(&q_dot);
 
     ROS_INFO_THROTTLE(2, "Desired Cartesian Velocity:  %.2f  %.2f  %.2f  %.2f  %.2f  %.2f", x_dot[0], x_dot[1], x_dot[2], x_dot[3], x_dot[4], x_dot[5]);
     ROS_INFO_THROTTLE(2, "Desired  Joints   Velocity:  %.2f  %.2f  %.2f  %.2f  %.2f  %.2f", q_dot[0], q_dot[1], q_dot[2], q_dot[3], q_dot[4], q_dot[5]);
@@ -290,6 +278,49 @@ void admittance_controller::wait_for_callbacks_initialization (void) {
 
     }
 
+}
+
+void admittance_controller::limit_joint_dynamics(Vector6d *joint_velocity) {
+
+    Vector6d joint_vel = *joint_velocity;
+    double duration = loop_rate.expectedCycleTime().toSec();
+
+    // Limit Joint Velocity
+
+    for (int i = 0; i < joint_vel.size(); i++) {
+
+        if (fabs(joint_vel[i]) > max_vel[i]) {
+
+            ROS_DEBUG("Reached Maximum Velocity on Joint %d", i);
+            joint_vel[i] = sign(joint_vel[i]) * max_vel[i];
+
+        }
+
+    }
+
+    // Limit Joint Acceleration
+
+    Vector6d delta_vel = joint_vel - joint_velocity_old;
+
+    for (int i = 0; i < delta_vel.size(); i++) {
+
+        if (fabs(delta_vel[i]) > max_acc[i] * duration) {
+            ROS_DEBUG("Reached Maximum Acceleration on Joint %d", i);
+            joint_vel[i] = joint_velocity_old[i] + sign(joint_vel[i]) * max_acc[i] * duration;
+        }
+
+    }
+
+    joint_velocity = &joint_vel;
+    joint_velocity_old = joint_vel;
+
+}
+
+int admittance_controller::sign (double num) {
+
+    if (num >= 0) {return +1;}
+    else {return -1;}
+    
 }
 
 

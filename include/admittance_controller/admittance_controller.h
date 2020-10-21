@@ -52,6 +52,7 @@ class admittance_controller {
         
         // ---- Admittance IO ---- //
         Vector6d external_wrench, x_dot, q_dot;
+        Vector6d joint_velocity_old;
         
         // ---- Limits ---- //
         Vector6d workspace_lim, joint_lim, max_vel, max_acc;
@@ -79,13 +80,16 @@ class admittance_controller {
         void force_sensor_Callback (const geometry_msgs::WrenchStamped::ConstPtr &);
         void joint_states_Callback (const sensor_msgs::JointState::ConstPtr &);
 
-        Matrix6d get_ee_rotation_matrix (std::vector<double> joint_position, std::vector<double> joint_velocity);
         Eigen::Matrix4d compute_fk (std::vector<double> joint_position, std::vector<double> joint_velocity);
         Eigen::MatrixXd compute_arm_jacobian (std::vector<double> joint_position, std::vector<double> joint_velocity);
+        Matrix6d get_ee_rotation_matrix (std::vector<double> joint_position, std::vector<double> joint_velocity);
 
         void wait_for_callbacks_initialization (void);
         void compute_admittance (void);
+        void limit_joint_dynamics (Vector6d *joint_velocity);
         void send_velocity_to_robot (Vector6d velocity);
+
+        int sign (double num);
 
 };
 
