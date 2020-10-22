@@ -2,6 +2,7 @@
 #define ADMITTANCE_CONTROLLER_H
 
 #include "ros/ros.h"
+#include "signal.h"
 
 #include "std_msgs/Float64MultiArray.h"
 #include "geometry_msgs/WrenchStamped.h"
@@ -23,6 +24,7 @@ using namespace Eigen;
 typedef Matrix<double, 7, 1> Vector7d;
 typedef Matrix<double, 6, 1> Vector6d;
 typedef Matrix<double, 6, 6> Matrix6d;
+typedef Array<double, 6, 1> Array6d;
 
 class admittance_controller {
 
@@ -33,8 +35,7 @@ class admittance_controller {
             std::string topic_force_sensor_subscriber, std::string topic_joint_states_subscriber,
             std::string topic_joint_trajectory_publisher, std::string topic_action_trajectory_publisher, std::string topic_joint_group_vel_controller_publisher, 
             std::vector<double> mass_model_matrix, std::vector<double> damping_model_matrix, 
-            double force_dead_zone, double torque_dead_zone, double admittance_weight,
-            std::vector<double> workspace_limits, std::vector<double> joint_limits,
+            double force_dead_zone, double torque_dead_zone, double admittance_weight, std::vector<double> joint_limits,
             std::vector<double> maximum_velocity, std::vector<double> maximum_acceleration);
 
         ~admittance_controller();
@@ -52,10 +53,10 @@ class admittance_controller {
         
         // ---- Admittance IO ---- //
         Vector6d external_wrench, x_dot, q_dot;
-        Vector6d joint_velocity_old;
+        Vector6d q_dot_last_cycle, x_dot_last_cycle;
         
         // ---- Limits ---- //
-        Vector6d workspace_lim, joint_lim, max_vel, max_acc;
+        Vector6d joint_lim, max_vel, max_acc;
 
         // ---- MoveIt Robot Model ---- //
         robot_model_loader::RobotModelLoader robot_model_loader;
@@ -66,7 +67,7 @@ class admittance_controller {
         Eigen::MatrixXd J;
 
         bool force_callback, joint_state_callback;
-        bool use_feedback_velocity, use_ur_real_robot;
+        bool use_feedback_velocity, use_ur_real_robot, inertia_reduction;
 
         ros::Subscriber force_sensor_subscriber, joint_states_subscriber;
         ros::Publisher joint_trajectory_publisher, joint_group_vel_controller_publisher;
@@ -86,7 +87,10 @@ class admittance_controller {
 
         void wait_for_callbacks_initialization (void);
         void compute_admittance (void);
-        void limit_joint_dynamics (Vector6d *joint_velocity);
+
+        Vector6d limit_joint_dynamics (Vector6d joint_velocity);
+        Vector6d compute_inertia_reduction (Vector6d velocity, Vector6d wrench);
+
         void send_velocity_to_robot (Vector6d velocity);
 
         int sign (double num);

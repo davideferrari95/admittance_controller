@@ -9,15 +9,15 @@ admittance_controller::admittance_controller(
     std::string topic_joint_trajectory_publisher, std::string topic_action_trajectory_publisher, std::string topic_joint_group_vel_controller_publisher,
     std::vector<double> mass_model_matrix, std::vector<double> damping_model_matrix,
     double force_dead_zone, double torque_dead_zone, double admittance_weight,
-    std::vector<double> workspace_limits, std::vector<double> joint_limits,
-    std::vector<double> maximum_velocity, std::vector<double> maximum_acceleration):
+    std::vector<double> joint_limits, std::vector<double> maximum_velocity, std::vector<double> maximum_acceleration):
 
     nh(n), loop_rate(ros_rate), mass_matrix(mass_model_matrix.data()), damping_matrix(damping_model_matrix.data()), 
     force_dead_zone(force_dead_zone), torque_dead_zone(torque_dead_zone), admittance_weight(admittance_weight),
-    workspace_lim(workspace_limits.data()), joint_lim(joint_limits.data()), max_vel(maximum_velocity.data()), max_acc(maximum_acceleration.data()) {
+    joint_lim(joint_limits.data()), max_vel(maximum_velocity.data()), max_acc(maximum_acceleration.data()) {
 
     // ---- LOAD PARAMETERS ---- //
     if (!nh.param<bool>("/admittance_controller_Node/use_feedback_velocity", use_feedback_velocity, false)) {ROS_ERROR("Couldn't retrieve the Feedback Velocity value.");}
+    if (!nh.param<bool>("/admittance_controller_Node/inertia_reduction", inertia_reduction, false)) {ROS_ERROR("Couldn't retrieve the Inertia Reduction value.");}
     if (!nh.param<bool>("/admittance_controller_Node/use_ur_real_robot", use_ur_real_robot, false)) {ROS_ERROR("Couldn't retrieve the Use Real Robot value.");}
 
     // ---- ROS SUBSCRIBERS ---- //
@@ -35,9 +35,10 @@ admittance_controller::admittance_controller(
     joint_position.resize(6);
     joint_velocity.resize(6);
     external_wrench.setZero();
-    joint_velocity_old.setZero();
     x_dot.setZero();
     q_dot.setZero();
+    x_dot_last_cycle.setZero();
+    q_dot_last_cycle.setZero();
 
     force_callback = false;
     joint_state_callback = false;
@@ -54,6 +55,8 @@ admittance_controller::admittance_controller(
     std::cout << std::endl;
     ROS_INFO_STREAM_ONCE("Mass Matrix:" << std::endl << std::endl << mass_matrix << std::endl);
     ROS_INFO_STREAM_ONCE("Damping Matrix:" << std::endl << std::endl << damping_matrix << std::endl);
+    ROS_INFO_ONCE("Maximum Velocity: %.2f %.2f %.2f %.2f %.2f %.2f", max_vel[0], max_vel[1], max_vel[2], max_vel[3], max_vel[4], max_vel[5]);
+    ROS_INFO_ONCE("Maximum Acceleration: %.2f %.2f %.2f %.2f %.2f %.2f", max_acc[0], max_acc[1], max_acc[2], max_acc[3], max_acc[4], max_acc[5]);
     ROS_INFO_ONCE("Force Dead Zone: %.2f", force_dead_zone);
     ROS_INFO_ONCE("Troque Dead Zone: %.2f", torque_dead_zone);
     ROS_INFO_ONCE("Admittance Weight: %.2f \n", admittance_weight);
@@ -67,7 +70,7 @@ admittance_controller::admittance_controller(
 admittance_controller::~admittance_controller() {}
 
 
-//------------------------------------------------------ CALLBACK ------------------------------------------------------//
+//------------------------------------------------------ CALLBACK -------------------------------------------------------//
 
 
 void admittance_controller::force_sensor_Callback (const geometry_msgs::WrenchStamped::ConstPtr &msg) {
@@ -81,12 +84,13 @@ void admittance_controller::force_sensor_Callback (const geometry_msgs::WrenchSt
     external_wrench[4] = force_sensor.wrench.torque.y;
     external_wrench[5] = force_sensor.wrench.torque.z;
     
-    ROS_DEBUG_THROTTLE(2, "Sensor Force  ->  x: %.2f  y: %.2f  z: %.2f", external_wrench[0], external_wrench[1], external_wrench[2]);
-    ROS_DEBUG_THROTTLE(2, "Sensor Torque ->  x: %.2f  y: %.2f  z: %.2f", external_wrench[3], external_wrench[4], external_wrench[5]); 
+    ROS_DEBUG_THROTTLE(2, "Sensor Force  ->  x: %.2f  y: %.2f  z: %.2f     Sensor Torque ->  x: %.2f  y: %.2f  z: %.2f", external_wrench[0], external_wrench[1], external_wrench[2], external_wrench[3], external_wrench[4], external_wrench[5]);
 
     for (int i = 0; i < 3; i++) {if(fabs(external_wrench[i]) < fabs(force_dead_zone)) {external_wrench[i] = 0.0;}}
     for (int i = 3; i < 6; i++) {if(fabs(external_wrench[i]) < fabs(torque_dead_zone)) {external_wrench[i] = 0.0;}}
     
+    ROS_INFO_THROTTLE(2, "Sensor Force Clamped  ->  x: %.2f  y: %.2f  z: %.2f     Sensor Torque Clamped ->  x: %.2f  y: %.2f  z: %.2f", external_wrench[0], external_wrench[1], external_wrench[2], external_wrench[3], external_wrench[4], external_wrench[5]);
+
     force_callback = true;
 
 }
@@ -115,7 +119,7 @@ void admittance_controller::joint_states_Callback (const sensor_msgs::JointState
 }
 
 
-//----------------------------------------------------- FUNCTIONS ------------------------------------------------------//
+//------------------------------------------------- KINEMATIC FUNCTIONS -------------------------------------------------//
 
 
 Eigen::Matrix4d admittance_controller::compute_fk (std::vector<double> joint_position, std::vector<double> joint_velocity) {
@@ -160,7 +164,7 @@ Eigen::MatrixXd admittance_controller::compute_arm_jacobian (std::vector<double>
     // Computing the Jacobian of the arm
     Eigen::Vector3d reference_point_position(0.0,0.0,0.0);
     Eigen::MatrixXd jacobian;
-    // TODO: controllare che joint_model_group->getLinkModelNames().back()) corrisponda a tool0 o ee_link
+
     kinematic_state->getJacobian(joint_model_group, kinematic_state->getLinkModel(joint_model_group->getLinkModelNames().back()), reference_point_position, jacobian);
 
     ROS_DEBUG_STREAM_THROTTLE(2, "Manipulator Jacobian: " << std::endl << std::endl << J << std::endl);
@@ -204,6 +208,10 @@ Matrix6d admittance_controller::get_ee_rotation_matrix (std::vector<double> join
 
 }
 
+
+//------------------------------------------------- ADMITTANCE FUNCTION -------------------------------------------------//
+
+
 void admittance_controller::compute_admittance (void) {
 
     ros::spinOnce();
@@ -217,16 +225,16 @@ void admittance_controller::compute_admittance (void) {
 
         // Compute Cartesian Velocity
         x_dot = J * joint_velocity_eigen;
-        ROS_INFO_STREAM_ONCE("Start Velocity: " << std::endl << std::endl << x_dot << std::endl);
+        ROS_DEBUG_STREAM_ONCE("Start Velocity: " << std::endl << std::endl << x_dot << std::endl);
     
     } else {
         
         // Use the Cartesian Speed obtained the last cycle
-        x_dot = x_dot;
+        x_dot = x_dot_last_cycle;
         
     }
 
-    // Compute Acceleration with Admittance //FIXME: sensore di forza non allineato alla posizione dell'ee
+    // Compute Acceleration with Admittance
     Vector6d arm_desired_accelaration_cartesian = mass_matrix.inverse() * ( - damping_matrix * x_dot + admittance_weight * 
                                                   (get_ee_rotation_matrix(joint_position, joint_velocity) * external_wrench));
 
@@ -235,15 +243,83 @@ void admittance_controller::compute_admittance (void) {
     ROS_INFO_STREAM_ONCE("Cycle Time: " << duration.toSec()*1000 << " ms");
     x_dot  += arm_desired_accelaration_cartesian * duration.toSec();
 
+    // Inertia Reduction Function
+    x_dot = compute_inertia_reduction(x_dot, external_wrench);
+    
     // Inverse Kinematic for Joint Velocity
     q_dot = J.inverse() * x_dot;
 
-    limit_joint_dynamics(&q_dot);
+    // Limit System Dynamic
+    q_dot = limit_joint_dynamics(q_dot);
+    x_dot_last_cycle = J * q_dot;
 
-    ROS_INFO_THROTTLE(2, "Desired Cartesian Velocity:  %.2f  %.2f  %.2f  %.2f  %.2f  %.2f", x_dot[0], x_dot[1], x_dot[2], x_dot[3], x_dot[4], x_dot[5]);
-    ROS_INFO_THROTTLE(2, "Desired  Joints   Velocity:  %.2f  %.2f  %.2f  %.2f  %.2f  %.2f", q_dot[0], q_dot[1], q_dot[2], q_dot[3], q_dot[4], q_dot[5]);
+    ROS_DEBUG_THROTTLE(2, "Desired Cartesian Velocity:  %.2f  %.2f  %.2f  %.2f  %.2f  %.2f", x_dot[0], x_dot[1], x_dot[2], x_dot[3], x_dot[4], x_dot[5]);
+    ROS_DEBUG_THROTTLE(2, "Desired  Joints   Velocity:  %.2f  %.2f  %.2f  %.2f  %.2f  %.2f", q_dot[0], q_dot[1], q_dot[2], q_dot[3], q_dot[4], q_dot[5]);
 
 }
+
+
+//----------------------------------------------- LIMIT DYNAMICS FUNCTIONS ----------------------------------------------//
+
+
+Vector6d admittance_controller::limit_joint_dynamics (Vector6d joint_velocity) {
+
+    double duration = loop_rate.expectedCycleTime().toSec();
+
+    // Limit Joint Velocity
+
+    for (int i = 0; i < joint_velocity.size(); i++) {
+
+        if (fabs(joint_velocity[i]) > max_vel[i]) {
+
+            ROS_DEBUG("Reached Maximum Velocity on Joint %d   ->   Velocity: %.3f   Limited at: %.3f", i, joint_velocity[i], sign(joint_velocity[i]) * max_vel[i]);
+            joint_velocity[i] = sign(joint_velocity[i]) * max_vel[i];
+
+        }
+
+    }
+
+    // Limit Joint Acceleration
+
+    for (int i = 0; i < joint_velocity.size(); i++) {
+
+        if (fabs(joint_velocity[i] - q_dot_last_cycle[i]) > max_acc[i] * duration) {
+
+            ROS_DEBUG("Reached Maximum Acceleration on Joint %d   ->   Acceleration: %.3f   Limited at: %.3f", i, (joint_velocity[i] - q_dot_last_cycle[i]) / duration, q_dot_last_cycle[i] +  sign(joint_velocity[i] - q_dot_last_cycle[i]) * max_acc[i]);
+            joint_velocity[i] = q_dot_last_cycle[i] + sign(joint_velocity[i] - q_dot_last_cycle[i]) * max_acc[i] * duration;
+        
+        }
+
+    }
+
+    q_dot_last_cycle = joint_velocity;
+    return joint_velocity;
+
+}
+
+Vector6d admittance_controller::compute_inertia_reduction (Vector6d velocity, Vector6d wrench) {
+
+    Array6d reduction, x_vel_array(velocity);
+
+    // Returns 0 if the Wrench is 0, 1 otherwise
+    for (unsigned i = 0; i < wrench.size(); i++) {
+        
+        if (wrench[i] == 0.0) {reduction[i] = 0;}
+        else {reduction[i] = 1;}
+        
+    }
+
+    x_vel_array *= reduction;
+
+    Vector6d x_vel(x_vel_array);
+
+    return x_vel;
+
+}
+
+
+//-------------------------------------------------- CONTROL FUNCTIONS --------------------------------------------------//
+
 
 void admittance_controller::send_velocity_to_robot (Vector6d velocity) {
 
@@ -264,6 +340,10 @@ void admittance_controller::send_velocity_to_robot (Vector6d velocity) {
 
 }
 
+
+//--------------------------------------------------- UTILS FUNCTIONS ---------------------------------------------------//
+
+
 void admittance_controller::wait_for_callbacks_initialization (void) {
 
     ros::Duration(1).sleep();
@@ -277,42 +357,6 @@ void admittance_controller::wait_for_callbacks_initialization (void) {
         if (!joint_state_callback) {ROS_WARN_THROTTLE(3, "Wait for Joint State feedback");}
 
     }
-
-}
-
-void admittance_controller::limit_joint_dynamics(Vector6d *joint_velocity) {
-
-    Vector6d joint_vel = *joint_velocity;
-    double duration = loop_rate.expectedCycleTime().toSec();
-
-    // Limit Joint Velocity
-
-    for (int i = 0; i < joint_vel.size(); i++) {
-
-        if (fabs(joint_vel[i]) > max_vel[i]) {
-
-            ROS_DEBUG("Reached Maximum Velocity on Joint %d", i);
-            joint_vel[i] = sign(joint_vel[i]) * max_vel[i];
-
-        }
-
-    }
-
-    // Limit Joint Acceleration
-
-    Vector6d delta_vel = joint_vel - joint_velocity_old;
-
-    for (int i = 0; i < delta_vel.size(); i++) {
-
-        if (fabs(delta_vel[i]) > max_acc[i] * duration) {
-            ROS_DEBUG("Reached Maximum Acceleration on Joint %d", i);
-            joint_vel[i] = joint_velocity_old[i] + sign(joint_vel[i]) * max_acc[i] * duration;
-        }
-
-    }
-
-    joint_velocity = &joint_vel;
-    joint_velocity_old = joint_vel;
 
 }
 
@@ -333,8 +377,6 @@ void admittance_controller::spinner (void) {
 
     compute_admittance();
     send_velocity_to_robot(q_dot);
-
-    // Matrix6d a = get_ee_rotation_matrix(joint_position, joint_velocity);
 
     ros::spinOnce();
     loop_rate.sleep();
