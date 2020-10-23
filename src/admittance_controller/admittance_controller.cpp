@@ -55,12 +55,13 @@ admittance_controller::admittance_controller(
     std::cout << std::endl;
     ROS_INFO_STREAM_ONCE("Mass Matrix:" << std::endl << std::endl << mass_matrix << std::endl);
     ROS_INFO_STREAM_ONCE("Damping Matrix:" << std::endl << std::endl << damping_matrix << std::endl);
-    ROS_INFO_ONCE("Maximum Velocity: %.2f %.2f %.2f %.2f %.2f %.2f", max_vel[0], max_vel[1], max_vel[2], max_vel[3], max_vel[4], max_vel[5]);
-    ROS_INFO_ONCE("Maximum Acceleration: %.2f %.2f %.2f %.2f %.2f %.2f", max_acc[0], max_acc[1], max_acc[2], max_acc[3], max_acc[4], max_acc[5]);
-    ROS_INFO_ONCE("Force Dead Zone: %.2f", force_dead_zone);
-    ROS_INFO_ONCE("Troque Dead Zone: %.2f", torque_dead_zone);
+    ROS_INFO_ONCE("Maximum Velocity:     %.2f %.2f %.2f %.2f %.2f %.2f", max_vel[0], max_vel[1], max_vel[2], max_vel[3], max_vel[4], max_vel[5]);
+    ROS_INFO_ONCE("Maximum Acceleration: %.2f %.2f %.2f %.2f %.2f %.2f \n", max_acc[0], max_acc[1], max_acc[2], max_acc[3], max_acc[4], max_acc[5]);
+    ROS_INFO_ONCE("Force Dead Zone:   %.2f", force_dead_zone);
+    ROS_INFO_ONCE("Troque Dead Zone:  %.2f", torque_dead_zone);
     ROS_INFO_ONCE("Admittance Weight: %.2f \n", admittance_weight);
-
+    ROS_INFO_STREAM_ONCE("Inertia Reduction: " << inertia_reduction << std::endl);
+    ROS_INFO_STREAM_ONCE("Cycle Time: " << loop_rate.expectedCycleTime().toSec()*1000 << " ms" << std::endl);
 
     // ---- WAIT FOR INITIALIZATION ---- //
     wait_for_callbacks_initialization();
@@ -84,12 +85,12 @@ void admittance_controller::force_sensor_Callback (const geometry_msgs::WrenchSt
     external_wrench[4] = force_sensor.wrench.torque.y;
     external_wrench[5] = force_sensor.wrench.torque.z;
     
-    ROS_DEBUG_THROTTLE(2, "Sensor Force  ->  x: %.2f  y: %.2f  z: %.2f     Sensor Torque ->  x: %.2f  y: %.2f  z: %.2f", external_wrench[0], external_wrench[1], external_wrench[2], external_wrench[3], external_wrench[4], external_wrench[5]);
+    ROS_DEBUG_THROTTLE(2, "Sensor Force/Torque  ->  Fx: %.2f  Fy: %.2f  Fz: %.2f  |  Tx: %.2f  Ty: %.2f  Tz: %.2f", external_wrench[0], external_wrench[1], external_wrench[2], external_wrench[3], external_wrench[4], external_wrench[5]);
 
     for (int i = 0; i < 3; i++) {if(fabs(external_wrench[i]) < fabs(force_dead_zone)) {external_wrench[i] = 0.0;}}
     for (int i = 3; i < 6; i++) {if(fabs(external_wrench[i]) < fabs(torque_dead_zone)) {external_wrench[i] = 0.0;}}
     
-    ROS_INFO_THROTTLE(2, "Sensor Force Clamped  ->  x: %.2f  y: %.2f  z: %.2f     Sensor Torque Clamped ->  x: %.2f  y: %.2f  z: %.2f", external_wrench[0], external_wrench[1], external_wrench[2], external_wrench[3], external_wrench[4], external_wrench[5]);
+    ROS_INFO_THROTTLE(2, "Sensor Force/Torque Clamped  ->  Fx: %.2f  Fy: %.2f  Fz: %.2f  |  Tx: %.2f  Ty: %.2f  Tz: %.2f", external_wrench[0], external_wrench[1], external_wrench[2], external_wrench[3], external_wrench[4], external_wrench[5]);
 
     force_callback = true;
 
@@ -240,11 +241,11 @@ void admittance_controller::compute_admittance (void) {
 
     // Integrate for Velocity Based Interface
     ros::Duration duration = loop_rate.expectedCycleTime();
-    ROS_INFO_STREAM_ONCE("Cycle Time: " << duration.toSec()*1000 << " ms");
+    // ROS_INFO_STREAM_ONCE("Cycle Time: " << duration.toSec()*1000 << " ms");
     x_dot  += arm_desired_accelaration_cartesian * duration.toSec();
 
     // Inertia Reduction Function
-    x_dot = compute_inertia_reduction(x_dot, external_wrench);
+    if (inertia_reduction) {x_dot = compute_inertia_reduction(x_dot, external_wrench);}
     
     // Inverse Kinematic for Joint Velocity
     q_dot = J.inverse() * x_dot;

@@ -30,7 +30,7 @@ force_dead_zone: 2.0
 torque_dead_zone: 0.5
 
 # admittance control weight
-admittance_weight: 0.5
+admittance_weight: 2
 
 # inertia reduction bool
-inertia_reduction: false
+inertia_reduction: true
