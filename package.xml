@@ -20,9 +20,10 @@
   <depend>moveit_ros_planning_interface</depend>
 
   <depend>std_msgs</depend>
-  <depend>trajectory_msgs</depend>
-  <depend>control_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>trajectory_msgs</depend>
   <depend>sensor_msgs</depend>
+  <depend>control_msgs</depend>
+  <depend>controller_manager_msgs</depend>
 
 </package>

@@ -14,6 +14,9 @@
 
 #include "admittance_controller/joint_trajectory.h"
 
+#include <controller_manager_msgs/SwitchController.h>
+#include <controller_manager_msgs/ListControllers.h>
+
 #include <actionlib/client/simple_action_client.h>
 #include <control_msgs/FollowJointTrajectoryAction.h>
 
@@ -52,6 +55,8 @@ class admittance_control {
         ros::NodeHandle nh;
         ros::Rate loop_rate;
 
+//----------------------------------------------------------------------------------------------------------------------//
+
         // ---- Admittance Parameters ---- //
         Matrix6d mass_matrix, damping_matrix;
         double force_dead_zone, torque_dead_zone, admittance_weight;
@@ -71,38 +76,57 @@ class admittance_control {
         std::vector<std::string> joint_names;
         Eigen::MatrixXd J;
 
+        // ---- Other Variables ---- //
         bool force_callback, joint_state_callback;
         bool use_feedback_velocity, use_ur_real_robot, inertia_reduction;
-
-        ros::Subscriber force_sensor_subscriber, joint_states_subscriber, trajectory_execution_subscriber;
-        ros::Publisher joint_trajectory_publisher, joint_group_vel_controller_publisher;
-        
-        actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction> *trajectory_client;
-		control_msgs::FollowJointTrajectoryGoal trajectory_goal;
-
         sensor_msgs::JointState joint_state;
         std::vector<double> joint_position, joint_velocity;
 
+//----------------------------------------------------------------------------------------------------------------------//
+
+        // ---- PUBLISHERS & SUBSCRIBERS ---- //
+        ros::Subscriber force_sensor_subscriber, joint_states_subscriber, trajectory_execution_subscriber;
+        ros::Publisher joint_trajectory_publisher, joint_group_vel_controller_publisher;
+
+        // ---- ROS SERVICES ---- //
+        ros::ServiceClient switch_controller_client, list_controllers_client;
+        controller_manager_msgs::SwitchController switch_controller_srv;
+        controller_manager_msgs::ListControllers list_controllers_srv;
+        
+        // ---- ROS ACTIONS ---- //
+        actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction> *trajectory_client;
+		control_msgs::FollowJointTrajectoryGoal trajectory_goal;
+
+//----------------------------------------------------------------------------------------------------------------------//
+
+        // ---- CALLBACKS ---- //
         void force_sensor_Callback (const geometry_msgs::WrenchStamped::ConstPtr &);
         void joint_states_Callback (const sensor_msgs::JointState::ConstPtr &);
         void trajectory_execution_Callback (const admittance_controller::joint_trajectory::ConstPtr &);
 
+        // ---- KINEMATIC MODEL FUNCTIONS ---- //
         Eigen::Matrix4d compute_fk (std::vector<double> joint_position, std::vector<double> joint_velocity);
         Eigen::MatrixXd compute_arm_jacobian (std::vector<double> joint_position, std::vector<double> joint_velocity);
         Matrix6d get_ee_rotation_matrix (std::vector<double> joint_position, std::vector<double> joint_velocity);
 
-        void wait_for_callbacks_initialization (void);
+        // ---- ADMITTANCE FUNCTIONS ---- //
         void compute_admittance (void);
 
+        // ---- LIMIT DYNAMIC FUNCTIONS ---- //
         Vector6d limit_joint_dynamics (Vector6d joint_velocity);
         Vector6d compute_inertia_reduction (Vector6d velocity, Vector6d wrench);
 
+        // ---- CONTROL FUNCTIONS ---- //
         void trajectory_execution (std::vector<sensor_msgs::JointState> trajectory);
         void send_velocity_to_robot (Vector6d velocity);
         void send_position_to_robot (Vector6d position);
         void wait_for_position_reached (Vector6d desired_position);
 
+        // ---- USEFUL FUNCTIONS ---- //
+        void wait_for_callbacks_initialization (void);
         int sign (double num);
+
+//----------------------------------------------------------------------------------------------------------------------//
 
         // ---- DEBUG ---- //
         std::ofstream ft_sensor;

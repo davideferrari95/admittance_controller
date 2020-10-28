@@ -19,15 +19,19 @@ admittance_control::admittance_control(
     if (!nh.param<bool>("/admittance_controller_Node/use_feedback_velocity", use_feedback_velocity, false)) {ROS_ERROR("Couldn't retrieve the Feedback Velocity value.");}
     if (!nh.param<bool>("/admittance_controller_Node/inertia_reduction", inertia_reduction, false)) {ROS_ERROR("Couldn't retrieve the Inertia Reduction value.");}
     if (!nh.param<bool>("/admittance_controller_Node/use_ur_real_robot", use_ur_real_robot, false)) {ROS_ERROR("Couldn't retrieve the Use Real Robot value.");}
-
+    
+    // ---- ROS PUBLISHERS ---- //
+    joint_trajectory_publisher = nh.advertise<trajectory_msgs::JointTrajectory>(topic_joint_trajectory_publisher, 1);
+    joint_group_vel_controller_publisher = nh.advertise<std_msgs::Float64MultiArray>(topic_joint_group_vel_controller_publisher, 1);
+    
     // ---- ROS SUBSCRIBERS ---- //
     force_sensor_subscriber = nh.subscribe(topic_force_sensor_subscriber, 1, &admittance_control::force_sensor_Callback, this);
     joint_states_subscriber = nh.subscribe(topic_joint_states_subscriber, 1, &admittance_control::joint_states_Callback, this);
     trajectory_execution_subscriber = nh.subscribe("/admittance_controller/trajectory_execution", 1, &admittance_control::trajectory_execution_Callback, this);
     
-    // ---- ROS PUBLISHERS ---- //
-    joint_trajectory_publisher = nh.advertise<trajectory_msgs::JointTrajectory>(topic_joint_trajectory_publisher, 1);
-    joint_group_vel_controller_publisher = nh.advertise<std_msgs::Float64MultiArray>(topic_joint_group_vel_controller_publisher, 1);
+    // ---- ROS SERVICES ---- //
+    switch_controller_client = nh.serviceClient<controller_manager_msgs::SwitchController>("/controller_manager/switch_controller");
+    list_controllers_client  = nh.serviceClient<controller_manager_msgs::ListControllers>("/controller_manager/list_controllers");
 
     // ---- ROS ACTIONS ---- //
     trajectory_client = new actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction>(topic_action_trajectory_publisher, true);
@@ -389,12 +393,27 @@ void admittance_control::send_velocity_to_robot (Vector6d velocity) {
 
 void admittance_control::send_position_to_robot (Vector6d position) {
 
-    // TODO: get available controller
-    // /controller_manager/list_controllers
-    // /controller_manager/list_controller_types
+    // Get available controller
+    if (list_controllers_client.call(list_controllers_srv)) {ROS_INFO("Get Available Controllers");} else {ROS_ERROR("Failed to Call Service: \"/controller_manager/list_controllers\"");}
+    std::vector<controller_manager_msgs::ControllerState> controller_list = list_controllers_srv.response.controller;
 
-    // TODO: Switch Controller (Velocity to Position)
-    // /controller_manager/switch_controller
+    switch_controller_srv.request.stop_controllers.resize(1);
+    switch_controller_srv.request.start_controllers.resize(1);
+
+    // Switch Controller (Velocity to Position)
+    switch_controller_srv.request.stop_controllers[0]  = "joint_group_vel_controller";
+    switch_controller_srv.request.start_controllers[0] = "scaled_pos_joint_traj_controller";
+
+    // Call Switch Controller Service
+    if (switch_controller_client.call(switch_controller_srv)) {
+
+        ROS_INFO("Controller Changed from \"%s\" to \"%s\"", switch_controller_srv.request.stop_controllers[0].c_str(), switch_controller_srv.request.start_controllers[0].c_str());
+        
+    } else {
+        
+        ROS_ERROR("Failed to Call Service: \"/controller_manager/switch_controller\"");
+        ROS_ERROR("Failed to Switch Controllers");
+    }
 
     // Message Creation
     trajectory_msgs::JointTrajectory trajectory_temp;
@@ -409,10 +428,23 @@ void admittance_control::send_position_to_robot (Vector6d position) {
     joint_trajectory_publisher.publish(trajectory_temp);
     ROS_INFO("GoTo Initial Position in %.2fs: %.2f %.2f %.2f %.2f %.2f %.2f", execution_time, position[0], position[1], position[2], position[3], position[4], position[5]);
 
+    // Wait for Position Reached
     wait_for_position_reached(position);
 
-    // TODO: Switch Controller (Position to Velocity)
-    // /controller_manager/switch_controller
+    // Switch Controller (Position to Velocity)
+    switch_controller_srv.request.stop_controllers[0]  = "scaled_pos_joint_traj_controller";
+    switch_controller_srv.request.start_controllers[0] = "joint_group_vel_controller";
+
+    // Call Switch Controller Service
+    if (switch_controller_client.call(switch_controller_srv)) {
+
+        ROS_INFO("Controller Changed from \"%s\" to \"%s\"", switch_controller_srv.request.stop_controllers[0].c_str(), switch_controller_srv.request.start_controllers[0].c_str());
+        
+    } else {
+        
+        ROS_ERROR("Failed to Call Service: \"/controller_manager/switch_controller\"");
+        ROS_ERROR("Failed to Switch Controllers");
+    }
 
 }
 
@@ -467,8 +499,8 @@ void admittance_control::spinner (void) {
 
     ros::spinOnce();
 
-    // compute_admittance();
-    // send_velocity_to_robot(q_dot);
+    compute_admittance();
+    send_velocity_to_robot(q_dot);
 
     ros::spinOnce();
     loop_rate.sleep();

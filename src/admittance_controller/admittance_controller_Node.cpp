@@ -30,7 +30,6 @@ void Shutdown_Signal_Handler (int sig) {
 }
 
 
-
 int main(int argc, char **argv) {
 
     ros::init(argc, argv, "admittance_controller_Node", ros::init_options::NoSigintHandler);
@@ -71,7 +70,7 @@ int main(int argc, char **argv) {
     if (!nh.getParam("/admittance_controller_Node/maximum_velocity", maximum_velocity)) {ROS_ERROR("Couldn't retrieve the Maximum Velocity parameter.");}
     if (!nh.getParam("/admittance_controller_Node/maximum_acceleration", maximum_acceleration)) {ROS_ERROR("Couldn't retrieve the Maximum Acceleration parameter.");}
     
-    
+
     admittance_control *ac = new admittance_control (
         nh, loop_rate, topic_force_sensor_subscriber, topic_joint_states_subscriber,
         topic_joint_trajectory_publisher, topic_action_trajectory_publisher, topic_joint_group_vel_controller_publisher,

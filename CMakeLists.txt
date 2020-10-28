@@ -7,13 +7,16 @@ find_package(Eigen3 REQUIRED)
 
 find_package(catkin REQUIRED COMPONENTS
   roscpp
-	std_msgs
-	trajectory_msgs
-  geometry_msgs
-  control_msgs
-  sensor_msgs
-  message_generation
   actionlib
+  message_generation
+
+	std_msgs
+  geometry_msgs
+  trajectory_msgs
+  sensor_msgs
+  control_msgs
+  controller_manager_msgs
+  
   moveit_core
   moveit_ros_planning_interface
 )
