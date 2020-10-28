@@ -10,14 +10,39 @@ find_package(catkin REQUIRED COMPONENTS
 	std_msgs
 	trajectory_msgs
   geometry_msgs
-	control_msgs
+  control_msgs
+  sensor_msgs
+  message_generation
   actionlib
   moveit_core
   moveit_ros_planning_interface
 )
 
+################################################
+## Declare ROS messages, services and actions ##
+################################################
+
+add_message_files(
+  FILES
+  joint_trajectory.msg
+)
+
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+  sensor_msgs
+  ${PROJECT_NAME}
+)
+
+###################################
+## catkin specific configuration ##
+###################################
+
 catkin_package(
-  INCLUDE_DIRS include
+  INCLUDE_DIRS 
+  include
+  CATKIN_DEPENDS
+	message_runtime
 )
 
 ###########

@@ -10,6 +10,9 @@
     
   <buildtool_depend>catkin</buildtool_depend>
 
+  <build_depend>message_generation</build_depend>
+  <exec_depend>message_runtime</exec_depend>
+
   <depend>roscpp</depend>
   <depend>eigen</depend>
   <depend>actionlib</depend>
@@ -20,5 +23,6 @@
   <depend>trajectory_msgs</depend>
   <depend>control_msgs</depend>
   <depend>geometry_msgs</depend>
-  
+  <depend>sensor_msgs</depend>
+
 </package>

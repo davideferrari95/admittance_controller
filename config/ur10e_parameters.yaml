@@ -26,11 +26,11 @@ maximum_velocity: [1.05, 1.05, 1.57, 1.57, 1.57, 1.57]
 maximum_acceleration: [0.20, 0.20, 0.20, 0.20, 0.20, 0.20]
 
 # force sensor dead zone
-force_dead_zone: 2.0
-torque_dead_zone: 0.5
+force_dead_zone: 4.0
+torque_dead_zone: 1
 
 # admittance control weight
 admittance_weight: 2
 
 # inertia reduction bool
-inertia_reduction: true
+inertia_reduction: false

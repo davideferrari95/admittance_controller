@@ -3,7 +3,7 @@
 
 //----------------------------------------------------- CONSTRUCTOR -----------------------------------------------------//
 
-admittance_controller::admittance_controller(   
+admittance_control::admittance_control(   
     ros::NodeHandle &n, ros::Rate ros_rate,   
     std::string topic_force_sensor_subscriber, std::string topic_joint_states_subscriber,
     std::string topic_joint_trajectory_publisher, std::string topic_action_trajectory_publisher, std::string topic_joint_group_vel_controller_publisher,
@@ -21,8 +21,9 @@ admittance_controller::admittance_controller(
     if (!nh.param<bool>("/admittance_controller_Node/use_ur_real_robot", use_ur_real_robot, false)) {ROS_ERROR("Couldn't retrieve the Use Real Robot value.");}
 
     // ---- ROS SUBSCRIBERS ---- //
-    force_sensor_subscriber = nh.subscribe(topic_force_sensor_subscriber, 1, &admittance_controller::force_sensor_Callback, this);
-    joint_states_subscriber = nh.subscribe(topic_joint_states_subscriber, 1, &admittance_controller::joint_states_Callback, this);
+    force_sensor_subscriber = nh.subscribe(topic_force_sensor_subscriber, 1, &admittance_control::force_sensor_Callback, this);
+    joint_states_subscriber = nh.subscribe(topic_joint_states_subscriber, 1, &admittance_control::joint_states_Callback, this);
+    trajectory_execution_subscriber = nh.subscribe("/admittance_controller/trajectory_execution", 1, &admittance_control::trajectory_execution_Callback, this);
     
     // ---- ROS PUBLISHERS ---- //
     joint_trajectory_publisher = nh.advertise<trajectory_msgs::JointTrajectory>(topic_joint_trajectory_publisher, 1);
@@ -62,19 +63,25 @@ admittance_controller::admittance_controller(
     ROS_INFO_ONCE("Admittance Weight: %.2f \n", admittance_weight);
     ROS_INFO_STREAM_ONCE("Inertia Reduction: " << inertia_reduction << std::endl);
     ROS_INFO_STREAM_ONCE("Cycle Time: " << loop_rate.expectedCycleTime().toSec()*1000 << " ms" << std::endl);
-
+    
+    // ---- DEBUG OFSTREAM ---- //
+    std::string package_path = ros::package::getPath("admittance_controller");
+    ROS_INFO_STREAM_ONCE("Package Path:  " << package_path << std::endl);
+    std::string save_file = package_path + "/debug/ft_sensor.txt";
+    ft_sensor = std::ofstream(save_file);
+    
     // ---- WAIT FOR INITIALIZATION ---- //
     wait_for_callbacks_initialization();
 
 }
 
-admittance_controller::~admittance_controller() {}
+admittance_control::~admittance_control() {ft_sensor.close();}
 
 
 //------------------------------------------------------ CALLBACK -------------------------------------------------------//
 
 
-void admittance_controller::force_sensor_Callback (const geometry_msgs::WrenchStamped::ConstPtr &msg) {
+void admittance_control::force_sensor_Callback (const geometry_msgs::WrenchStamped::ConstPtr &msg) {
 
     geometry_msgs::WrenchStamped force_sensor = *msg;
 
@@ -85,6 +92,9 @@ void admittance_controller::force_sensor_Callback (const geometry_msgs::WrenchSt
     external_wrench[4] = force_sensor.wrench.torque.y;
     external_wrench[5] = force_sensor.wrench.torque.z;
     
+    for (int i = 0; i < 6; i++) {ft_sensor << external_wrench[i] << " ";}
+    ft_sensor << "\n";
+
     ROS_DEBUG_THROTTLE(2, "Sensor Force/Torque  ->  Fx: %.2f  Fy: %.2f  Fz: %.2f  |  Tx: %.2f  Ty: %.2f  Tz: %.2f", external_wrench[0], external_wrench[1], external_wrench[2], external_wrench[3], external_wrench[4], external_wrench[5]);
 
     for (int i = 0; i < 3; i++) {if(fabs(external_wrench[i]) < fabs(force_dead_zone)) {external_wrench[i] = 0.0;}}
@@ -96,7 +106,7 @@ void admittance_controller::force_sensor_Callback (const geometry_msgs::WrenchSt
 
 }
 
-void admittance_controller::joint_states_Callback (const sensor_msgs::JointState::ConstPtr &msg) {
+void admittance_control::joint_states_Callback (const sensor_msgs::JointState::ConstPtr &msg) {
 
     joint_state = *msg;
 
@@ -119,11 +129,19 @@ void admittance_controller::joint_states_Callback (const sensor_msgs::JointState
     
 }
 
+void admittance_control::trajectory_execution_Callback (const admittance_controller::joint_trajectory::ConstPtr &msg) {
+
+    admittance_controller::joint_trajectory temp = *msg; 
+
+    trajectory_execution(temp.trajectory);
+
+}
+
 
 //------------------------------------------------- KINEMATIC FUNCTIONS -------------------------------------------------//
 
 
-Eigen::Matrix4d admittance_controller::compute_fk (std::vector<double> joint_position, std::vector<double> joint_velocity) {
+Eigen::Matrix4d admittance_control::compute_fk (std::vector<double> joint_position, std::vector<double> joint_velocity) {
 
     ros::spinOnce();
 
@@ -153,7 +171,7 @@ Eigen::Matrix4d admittance_controller::compute_fk (std::vector<double> joint_pos
 
 }
 
-Eigen::MatrixXd admittance_controller::compute_arm_jacobian (std::vector<double> joint_position, std::vector<double> joint_velocity) {
+Eigen::MatrixXd admittance_control::compute_arm_jacobian (std::vector<double> joint_position, std::vector<double> joint_velocity) {
 
     ros::spinOnce();
 
@@ -175,7 +193,7 @@ Eigen::MatrixXd admittance_controller::compute_arm_jacobian (std::vector<double>
 
 }
 
-Matrix6d admittance_controller::get_ee_rotation_matrix (std::vector<double> joint_position, std::vector<double> joint_velocity) {
+Matrix6d admittance_control::get_ee_rotation_matrix (std::vector<double> joint_position, std::vector<double> joint_velocity) {
 
     ros::spinOnce();
 
@@ -213,7 +231,7 @@ Matrix6d admittance_controller::get_ee_rotation_matrix (std::vector<double> join
 //------------------------------------------------- ADMITTANCE FUNCTION -------------------------------------------------//
 
 
-void admittance_controller::compute_admittance (void) {
+void admittance_control::compute_admittance (void) {
 
     ros::spinOnce();
 
@@ -263,7 +281,7 @@ void admittance_controller::compute_admittance (void) {
 //----------------------------------------------- LIMIT DYNAMICS FUNCTIONS ----------------------------------------------//
 
 
-Vector6d admittance_controller::limit_joint_dynamics (Vector6d joint_velocity) {
+Vector6d admittance_control::limit_joint_dynamics (Vector6d joint_velocity) {
 
     double duration = loop_rate.expectedCycleTime().toSec();
 
@@ -298,7 +316,7 @@ Vector6d admittance_controller::limit_joint_dynamics (Vector6d joint_velocity) {
 
 }
 
-Vector6d admittance_controller::compute_inertia_reduction (Vector6d velocity, Vector6d wrench) {
+Vector6d admittance_control::compute_inertia_reduction (Vector6d velocity, Vector6d wrench) {
 
     Array6d reduction, x_vel_array(velocity);
 
@@ -319,10 +337,38 @@ Vector6d admittance_controller::compute_inertia_reduction (Vector6d velocity, Ve
 }
 
 
+//------------------------------------------------ TRAJECLTORY FUNCTIONS ------------------------------------------------//
+
+
+void admittance_control::trajectory_execution (std::vector<sensor_msgs::JointState> trajectory) {
+
+    // Compute Trajectory Rate (Point 1 - Point 0)
+    double trajectory_rate = (trajectory[1].header.stamp.sec + (trajectory[1].header.stamp.nsec * pow(10,-9))) - (trajectory[0].header.stamp.sec + (trajectory[0].header.stamp.nsec * pow(10,-9)));
+
+    // Move Robot to Poin 0 (Position Controller)
+    Vector6d position(trajectory[0].position.data());
+    send_position_to_robot(position);
+
+    for (unsigned i = 0; i < trajectory.size(); i++) {
+
+        // Read each trajectory point velocities
+        Vector6d velocity(trajectory[i].velocity.data());
+
+        // Command robot in velocity
+        send_velocity_to_robot(velocity);
+
+        // Sleep
+        ros::Duration(trajectory_rate).sleep();
+
+    }
+
+}
+
+
 //-------------------------------------------------- CONTROL FUNCTIONS --------------------------------------------------//
 
 
-void admittance_controller::send_velocity_to_robot (Vector6d velocity) {
+void admittance_control::send_velocity_to_robot (Vector6d velocity) {
 
     std_msgs::Float64MultiArray msg;
 
@@ -341,11 +387,56 @@ void admittance_controller::send_velocity_to_robot (Vector6d velocity) {
 
 }
 
+void admittance_control::send_position_to_robot (Vector6d position) {
+
+    // TODO: get available controller
+    // /controller_manager/list_controllers
+    // /controller_manager/list_controller_types
+
+    // TODO: Switch Controller (Velocity to Position)
+    // /controller_manager/switch_controller
+
+    // Message Creation
+    trajectory_msgs::JointTrajectory trajectory_temp;
+    double execution_time = 10;
+
+    trajectory_temp.joint_names = {"shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint", "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"};
+    trajectory_temp.points.resize(1);
+    trajectory_temp.points[0].positions = {position[0], position[1], position[2], position[3], position[4], position[5]};
+    trajectory_temp.points[0].time_from_start = ros::Duration(execution_time);
+
+    // Publish Trajectory Position
+    joint_trajectory_publisher.publish(trajectory_temp);
+    ROS_INFO("GoTo Initial Position in %.2fs: %.2f %.2f %.2f %.2f %.2f %.2f", execution_time, position[0], position[1], position[2], position[3], position[4], position[5]);
+
+    wait_for_position_reached(position);
+
+    // TODO: Switch Controller (Position to Velocity)
+    // /controller_manager/switch_controller
+
+}
+
+void admittance_control::wait_for_position_reached (Vector6d desired_position) {
+
+    ros::spinOnce();
+
+    Vector6d current_position(joint_state.position.data());
+
+    // Wait until desired_position and current_position are equal with a little tolerance
+    while ((Eigen::abs(desired_position.array() - current_position.array()) < 0.0001).all()) {
+
+        ros::spinOnce();
+        current_position = Vector6d(joint_state.position.data());
+        
+    }
+
+}
+
 
 //--------------------------------------------------- UTILS FUNCTIONS ---------------------------------------------------//
 
 
-void admittance_controller::wait_for_callbacks_initialization (void) {
+void admittance_control::wait_for_callbacks_initialization (void) {
 
     ros::Duration(1).sleep();
 
@@ -361,7 +452,7 @@ void admittance_controller::wait_for_callbacks_initialization (void) {
 
 }
 
-int admittance_controller::sign (double num) {
+int admittance_control::sign (double num) {
 
     if (num >= 0) {return +1;}
     else {return -1;}
@@ -372,12 +463,12 @@ int admittance_controller::sign (double num) {
 //-------------------------------------------------------- MAIN --------------------------------------------------------//
 
 
-void admittance_controller::spinner (void) {
+void admittance_control::spinner (void) {
 
     ros::spinOnce();
 
-    compute_admittance();
-    send_velocity_to_robot(q_dot);
+    // compute_admittance();
+    // send_velocity_to_robot(q_dot);
 
     ros::spinOnce();
     loop_rate.sleep();

@@ -66,13 +66,13 @@ int main(int argc, char **argv) {
     if (!nh.param("/admittance_controller_Node/torque_dead_zone", torque_dead_zone, 3.0)) {ROS_ERROR("Couldn't retrieve the Torque Dead Zone parameter.");}
     if (!nh.param("/admittance_controller_Node/admittance_weight", admittance_weight, 1.0)) {ROS_ERROR("Couldn't retrieve the Admittance Weight parameter.");}
 
-    
     // ---- LOADING "SAFETY" PARAMETERS FROM THE ROS SERVER ---- //
     if (!nh.getParam("/admittance_controller_Node/joint_limits", joint_limits)) {ROS_ERROR("Couldn't retrieve the Joint Limits parameter.");}
     if (!nh.getParam("/admittance_controller_Node/maximum_velocity", maximum_velocity)) {ROS_ERROR("Couldn't retrieve the Maximum Velocity parameter.");}
     if (!nh.getParam("/admittance_controller_Node/maximum_acceleration", maximum_acceleration)) {ROS_ERROR("Couldn't retrieve the Maximum Acceleration parameter.");}
     
-    admittance_controller *ac = new admittance_controller (
+    
+    admittance_control *ac = new admittance_control (
         nh, loop_rate, topic_force_sensor_subscriber, topic_joint_states_subscriber,
         topic_joint_trajectory_publisher, topic_action_trajectory_publisher, topic_joint_group_vel_controller_publisher,
         mass_model_matrix, damping_model_matrix, force_dead_zone, torque_dead_zone, admittance_weight,

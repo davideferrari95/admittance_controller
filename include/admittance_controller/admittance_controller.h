@@ -1,22 +1,27 @@
 #ifndef ADMITTANCE_CONTROLLER_H
 #define ADMITTANCE_CONTROLLER_H
 
-#include "ros/ros.h"
-#include "signal.h"
+#include <signal.h>
+#include <fstream>
 
-#include "std_msgs/Float64MultiArray.h"
-#include "geometry_msgs/WrenchStamped.h"
-#include "trajectory_msgs/JointTrajectory.h"
-#include "sensor_msgs/JointState.h"
+#include <ros/ros.h>
+#include <ros/package.h>
 
-#include "actionlib/client/simple_action_client.h"
-#include "control_msgs/FollowJointTrajectoryAction.h"
+#include <std_msgs/Float64MultiArray.h>
+#include <geometry_msgs/WrenchStamped.h>
+#include <trajectory_msgs/JointTrajectory.h>
+#include <sensor_msgs/JointState.h>
 
-#include "moveit/robot_model_loader/robot_model_loader.h"
-#include "moveit/robot_model/robot_model.h"
-#include "moveit/robot_state/robot_state.h"
+#include "admittance_controller/joint_trajectory.h"
 
-#include "eigen3/Eigen/Eigen"
+#include <actionlib/client/simple_action_client.h>
+#include <control_msgs/FollowJointTrajectoryAction.h>
+
+#include <moveit/robot_model_loader/robot_model_loader.h>
+#include <moveit/robot_model/robot_model.h>
+#include <moveit/robot_state/robot_state.h>
+
+#include <eigen3/Eigen/Eigen>
 
 
 using namespace Eigen;
@@ -26,11 +31,11 @@ typedef Matrix<double, 6, 1> Vector6d;
 typedef Matrix<double, 6, 6> Matrix6d;
 typedef Array<double, 6, 1> Array6d;
 
-class admittance_controller {
+class admittance_control {
 
     public:
 
-        admittance_controller( 
+        admittance_control( 
             ros::NodeHandle &n, ros::Rate ros_rate,   
             std::string topic_force_sensor_subscriber, std::string topic_joint_states_subscriber,
             std::string topic_joint_trajectory_publisher, std::string topic_action_trajectory_publisher, std::string topic_joint_group_vel_controller_publisher, 
@@ -38,7 +43,7 @@ class admittance_controller {
             double force_dead_zone, double torque_dead_zone, double admittance_weight, std::vector<double> joint_limits,
             std::vector<double> maximum_velocity, std::vector<double> maximum_acceleration);
 
-        ~admittance_controller();
+        ~admittance_control();
 
         void spinner (void);
 
@@ -69,7 +74,7 @@ class admittance_controller {
         bool force_callback, joint_state_callback;
         bool use_feedback_velocity, use_ur_real_robot, inertia_reduction;
 
-        ros::Subscriber force_sensor_subscriber, joint_states_subscriber;
+        ros::Subscriber force_sensor_subscriber, joint_states_subscriber, trajectory_execution_subscriber;
         ros::Publisher joint_trajectory_publisher, joint_group_vel_controller_publisher;
         
         actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction> *trajectory_client;
@@ -80,6 +85,7 @@ class admittance_controller {
 
         void force_sensor_Callback (const geometry_msgs::WrenchStamped::ConstPtr &);
         void joint_states_Callback (const sensor_msgs::JointState::ConstPtr &);
+        void trajectory_execution_Callback (const admittance_controller::joint_trajectory::ConstPtr &);
 
         Eigen::Matrix4d compute_fk (std::vector<double> joint_position, std::vector<double> joint_velocity);
         Eigen::MatrixXd compute_arm_jacobian (std::vector<double> joint_position, std::vector<double> joint_velocity);
@@ -91,9 +97,15 @@ class admittance_controller {
         Vector6d limit_joint_dynamics (Vector6d joint_velocity);
         Vector6d compute_inertia_reduction (Vector6d velocity, Vector6d wrench);
 
+        void trajectory_execution (std::vector<sensor_msgs::JointState> trajectory);
         void send_velocity_to_robot (Vector6d velocity);
+        void send_position_to_robot (Vector6d position);
+        void wait_for_position_reached (Vector6d desired_position);
 
         int sign (double num);
+
+        // ---- DEBUG ---- //
+        std::ofstream ft_sensor;
 
 };
 
