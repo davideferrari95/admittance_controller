@@ -15,6 +15,7 @@ find_package(catkin REQUIRED COMPONENTS
   trajectory_msgs
   sensor_msgs
   control_msgs
+  std_srvs
   controller_manager_msgs
   
   moveit_core

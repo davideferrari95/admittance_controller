@@ -14,6 +14,7 @@
 
 #include "admittance_controller/joint_trajectory.h"
 
+#include <std_srvs/Trigger.h>
 #include <controller_manager_msgs/SwitchController.h>
 #include <controller_manager_msgs/ListControllers.h>
 
@@ -89,13 +90,14 @@ class admittance_control {
         ros::Publisher joint_trajectory_publisher, joint_group_vel_controller_publisher;
 
         // ---- ROS SERVICES ---- //
-        ros::ServiceClient switch_controller_client, list_controllers_client;
+        ros::ServiceClient switch_controller_client, list_controllers_client, zero_ft_sensor_client;
         controller_manager_msgs::SwitchController switch_controller_srv;
         controller_manager_msgs::ListControllers list_controllers_srv;
+        std_srvs::Trigger zero_ft_sensor_srv;
         
         // ---- ROS ACTIONS ---- //
         actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction> *trajectory_client;
-		control_msgs::FollowJointTrajectoryGoal trajectory_goal;
+        control_msgs::FollowJointTrajectoryGoal trajectory_goal;
 
 //----------------------------------------------------------------------------------------------------------------------//
 

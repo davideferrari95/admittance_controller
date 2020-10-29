@@ -32,6 +32,7 @@ admittance_control::admittance_control(
     // ---- ROS SERVICES ---- //
     switch_controller_client = nh.serviceClient<controller_manager_msgs::SwitchController>("/controller_manager/switch_controller");
     list_controllers_client  = nh.serviceClient<controller_manager_msgs::ListControllers>("/controller_manager/list_controllers");
+    zero_ft_sensor_client    = nh.serviceClient<std_srvs::Trigger>("/zero_ftsensor");
 
     // ---- ROS ACTIONS ---- //
     trajectory_client = new actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction>(topic_action_trajectory_publisher, true);
@@ -76,6 +77,9 @@ admittance_control::admittance_control(
     
     // ---- WAIT FOR INITIALIZATION ---- //
     wait_for_callbacks_initialization();
+
+    // ---- ZERO FT SENSOR ---- //
+    if (zero_ft_sensor_client.call(zero_ft_sensor_srv)) {ROS_INFO("FT Sensor Set To Zero");} else {ROS_ERROR("Failed to Call Service: \"/zero_ftsensor\"");}
 
 }
 
@@ -350,8 +354,8 @@ void admittance_control::trajectory_execution (std::vector<sensor_msgs::JointSta
     double trajectory_rate = (trajectory[1].header.stamp.sec + (trajectory[1].header.stamp.nsec * pow(10,-9))) - (trajectory[0].header.stamp.sec + (trajectory[0].header.stamp.nsec * pow(10,-9)));
 
     // Move Robot to Poin 0 (Position Controller)
-    Vector6d position(trajectory[0].position.data());
-    send_position_to_robot(position);
+    Vector6d starting_position(trajectory[0].position.data());
+    send_position_to_robot(starting_position);
 
     for (unsigned i = 0; i < trajectory.size(); i++) {
 
