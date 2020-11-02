@@ -23,16 +23,20 @@ admittance_control::admittance_control(
     // ---- ROS PUBLISHERS ---- //
     joint_trajectory_publisher = nh.advertise<trajectory_msgs::JointTrajectory>(topic_joint_trajectory_publisher, 1);
     joint_group_vel_controller_publisher = nh.advertise<std_msgs::Float64MultiArray>(topic_joint_group_vel_controller_publisher, 1);
+    ur10e_script_command_publisher = nh.advertise<std_msgs::String>("/ur_hardware_interface/script_command",1);
     
     // ---- ROS SUBSCRIBERS ---- //
     force_sensor_subscriber = nh.subscribe(topic_force_sensor_subscriber, 1, &admittance_control::force_sensor_Callback, this);
     joint_states_subscriber = nh.subscribe(topic_joint_states_subscriber, 1, &admittance_control::joint_states_Callback, this);
     trajectory_execution_subscriber = nh.subscribe("/admittance_controller/trajectory_execution", 1, &admittance_control::trajectory_execution_Callback, this);
     
-    // ---- ROS SERVICES ---- //
+    // ---- ROS SERVICE SERVERS ---- //
+    ur10e_freedrive_mode_service = nh.advertiseService("/admittance_controller/ur10e_freedrive_mode_service", &admittance_control::FreedriveMode_Service_Callback, this);
+
+    // ---- ROS SERVICE CLIENTS ---- //
     switch_controller_client = nh.serviceClient<controller_manager_msgs::SwitchController>("/controller_manager/switch_controller");
     list_controllers_client  = nh.serviceClient<controller_manager_msgs::ListControllers>("/controller_manager/list_controllers");
-    zero_ft_sensor_client    = nh.serviceClient<std_srvs::Trigger>("/zero_ftsensor");
+    zero_ft_sensor_client    = nh.serviceClient<std_srvs::Trigger>("/ur_hardware_interface/zero_ftsensor");
 
     // ---- ROS ACTIONS ---- //
     trajectory_client = new actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction>(topic_action_trajectory_publisher, true);
@@ -79,7 +83,7 @@ admittance_control::admittance_control(
     wait_for_callbacks_initialization();
 
     // ---- ZERO FT SENSOR ---- //
-    if (zero_ft_sensor_client.call(zero_ft_sensor_srv)) {ROS_INFO("FT Sensor Set To Zero");} else {ROS_ERROR("Failed to Call Service: \"/zero_ftsensor\"");}
+    if (zero_ft_sensor_client.call(zero_ft_sensor_srv)) {ROS_INFO("FT Sensor Set To Zero");} else {ROS_ERROR("Failed to Call Service: \"/ur_hardware_interface/zero_ftsensor\"");}
 
 }
 
@@ -139,9 +143,22 @@ void admittance_control::joint_states_Callback (const sensor_msgs::JointState::C
 
 void admittance_control::trajectory_execution_Callback (const admittance_controller::joint_trajectory::ConstPtr &msg) {
 
-    admittance_controller::joint_trajectory temp = *msg; 
+    admittance_controller::joint_trajectory temp = *msg;
+
+    ROS_WARN("Trajectory Execution Callback");
 
     trajectory_execution(temp.trajectory);
+
+}
+
+bool admittance_control::FreedriveMode_Service_Callback (std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res) {
+
+    bool freedrive_mode_request = req.data;
+
+    freedrive_mode(freedrive_mode_request);
+    
+    res.success = true;
+    return true;
 
 }
 
@@ -407,12 +424,14 @@ void admittance_control::send_position_to_robot (Vector6d position) {
     // Switch Controller (Velocity to Position)
     switch_controller_srv.request.stop_controllers[0]  = "joint_group_vel_controller";
     switch_controller_srv.request.start_controllers[0] = "scaled_pos_joint_traj_controller";
+    switch_controller_srv.request.strictness = switch_controller_srv.request.STRICT;
 
     // Call Switch Controller Service
     if (switch_controller_client.call(switch_controller_srv)) {
 
-        ROS_INFO("Controller Changed from \"%s\" to \"%s\"", switch_controller_srv.request.stop_controllers[0].c_str(), switch_controller_srv.request.start_controllers[0].c_str());
-        
+        ROS_WARN("Controller Changed from \"%s\" to \"%s\"", switch_controller_srv.request.stop_controllers[0].c_str(), switch_controller_srv.request.start_controllers[0].c_str());
+        ros::Duration(1).sleep();
+
     } else {
         
         ROS_ERROR("Failed to Call Service: \"/controller_manager/switch_controller\"");
@@ -438,11 +457,13 @@ void admittance_control::send_position_to_robot (Vector6d position) {
     // Switch Controller (Position to Velocity)
     switch_controller_srv.request.stop_controllers[0]  = "scaled_pos_joint_traj_controller";
     switch_controller_srv.request.start_controllers[0] = "joint_group_vel_controller";
+    switch_controller_srv.request.strictness = switch_controller_srv.request.STRICT;
 
     // Call Switch Controller Service
     if (switch_controller_client.call(switch_controller_srv)) {
 
-        ROS_INFO("Controller Changed from \"%s\" to \"%s\"", switch_controller_srv.request.stop_controllers[0].c_str(), switch_controller_srv.request.start_controllers[0].c_str());
+        ROS_WARN("Controller Changed from \"%s\" to \"%s\"", switch_controller_srv.request.stop_controllers[0].c_str(), switch_controller_srv.request.start_controllers[0].c_str());
+        ros::Duration(1).sleep();
         
     } else {
         
@@ -459,11 +480,29 @@ void admittance_control::wait_for_position_reached (Vector6d desired_position) {
     Vector6d current_position(joint_state.position.data());
 
     // Wait until desired_position and current_position are equal with a little tolerance
-    while ((Eigen::abs(desired_position.array() - current_position.array()) < 0.0001).all()) {
+    while ((Eigen::abs(desired_position.array() - current_position.array()) > 0.0001).all()) {
 
         ros::spinOnce();
         current_position = Vector6d(joint_state.position.data());
         
+    }
+
+}
+
+void admittance_control::freedrive_mode (bool activation) {
+
+    std_msgs::String freedrive_mode_command;
+
+    if (activation) {
+
+        // Turn ON FreedriveMode
+        freedrive_mode_command.data = "def prog(): freedrive_mode() while(1) end";
+    
+    } else {
+
+        // Turn OFF FreedriveMode
+        freedrive_mode_command.data = "def prog(): end";
+    
     }
 
 }

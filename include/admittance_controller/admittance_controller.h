@@ -8,6 +8,7 @@
 #include <ros/package.h>
 
 #include <std_msgs/Float64MultiArray.h>
+#include <std_msgs/String.h>
 #include <geometry_msgs/WrenchStamped.h>
 #include <trajectory_msgs/JointTrajectory.h>
 #include <sensor_msgs/JointState.h>
@@ -15,6 +16,7 @@
 #include "admittance_controller/joint_trajectory.h"
 
 #include <std_srvs/Trigger.h>
+#include <std_srvs/SetBool.h>
 #include <controller_manager_msgs/SwitchController.h>
 #include <controller_manager_msgs/ListControllers.h>
 
@@ -87,10 +89,11 @@ class admittance_control {
 
         // ---- PUBLISHERS & SUBSCRIBERS ---- //
         ros::Subscriber force_sensor_subscriber, joint_states_subscriber, trajectory_execution_subscriber;
-        ros::Publisher joint_trajectory_publisher, joint_group_vel_controller_publisher;
+        ros::Publisher joint_trajectory_publisher, joint_group_vel_controller_publisher, ur10e_script_command_publisher;
 
         // ---- ROS SERVICES ---- //
         ros::ServiceClient switch_controller_client, list_controllers_client, zero_ft_sensor_client;
+        ros::ServiceServer ur10e_freedrive_mode_service;
         controller_manager_msgs::SwitchController switch_controller_srv;
         controller_manager_msgs::ListControllers list_controllers_srv;
         std_srvs::Trigger zero_ft_sensor_srv;
@@ -105,6 +108,7 @@ class admittance_control {
         void force_sensor_Callback (const geometry_msgs::WrenchStamped::ConstPtr &);
         void joint_states_Callback (const sensor_msgs::JointState::ConstPtr &);
         void trajectory_execution_Callback (const admittance_controller::joint_trajectory::ConstPtr &);
+        bool FreedriveMode_Service_Callback (std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res);
 
         // ---- KINEMATIC MODEL FUNCTIONS ---- //
         Eigen::Matrix4d compute_fk (std::vector<double> joint_position, std::vector<double> joint_velocity);
@@ -123,6 +127,7 @@ class admittance_control {
         void send_velocity_to_robot (Vector6d velocity);
         void send_position_to_robot (Vector6d position);
         void wait_for_position_reached (Vector6d desired_position);
+        void freedrive_mode (bool activation);
 
         // ---- USEFUL FUNCTIONS ---- //
         void wait_for_callbacks_initialization (void);
