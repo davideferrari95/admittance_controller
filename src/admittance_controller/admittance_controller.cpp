@@ -52,6 +52,7 @@ admittance_control::admittance_control(
 
     force_callback = false;
     joint_state_callback = false;
+    freedrive_mode_request = false;
 
     // ---- MoveIt Robot Model ---- //
     robot_model_loader = robot_model_loader::RobotModelLoader ("robot_description");
@@ -153,7 +154,7 @@ void admittance_control::trajectory_execution_Callback (const admittance_control
 
 bool admittance_control::FreedriveMode_Service_Callback (std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res) {
 
-    bool freedrive_mode_request = req.data;
+    freedrive_mode_request = req.data;
 
     freedrive_mode(freedrive_mode_request);
     
@@ -211,8 +212,8 @@ Eigen::MatrixXd admittance_control::compute_arm_jacobian (std::vector<double> jo
 
     kinematic_state->getJacobian(joint_model_group, kinematic_state->getLinkModel(joint_model_group->getLinkModelNames().back()), reference_point_position, jacobian);
 
-    ROS_DEBUG_STREAM_THROTTLE(2, "Manipulator Jacobian: " << std::endl << std::endl << J << std::endl);
-    ROS_DEBUG_STREAM_THROTTLE(2, "Manipulator Inverse Jacobian: " << std::endl << std::endl << J.inverse() << std::endl);
+    ROS_DEBUG_STREAM_THROTTLE(2, "Manipulator Jacobian: " << std::endl << std::endl << jacobian << std::endl);
+    ROS_DEBUG_STREAM_THROTTLE(2, "Manipulator Inverse Jacobian: " << std::endl << std::endl << jacobian.inverse() << std::endl);
 
     return jacobian;
 
@@ -353,11 +354,7 @@ Vector6d admittance_control::compute_inertia_reduction (Vector6d velocity, Vecto
         
     }
 
-    x_vel_array *= reduction;
-
-    Vector6d x_vel(x_vel_array);
-
-    return x_vel;
+    return Vector6d(x_vel_array *= reduction);
 
 }
 
@@ -542,10 +539,13 @@ void admittance_control::spinner (void) {
 
     ros::spinOnce();
 
-    compute_admittance();
-    send_velocity_to_robot(q_dot);
+    if (!freedrive_mode_request) {
 
-    ros::spinOnce();
-    loop_rate.sleep();
+        compute_admittance();
+        send_velocity_to_robot(q_dot);
+        ros::spinOnce();
+        loop_rate.sleep();
+
+    }
     
 }

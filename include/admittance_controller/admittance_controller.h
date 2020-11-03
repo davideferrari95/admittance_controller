@@ -80,7 +80,7 @@ class admittance_control {
         Eigen::MatrixXd J;
 
         // ---- Other Variables ---- //
-        bool force_callback, joint_state_callback;
+        bool force_callback, joint_state_callback, freedrive_mode_request;
         bool use_feedback_velocity, use_ur_real_robot, inertia_reduction;
         sensor_msgs::JointState joint_state;
         std::vector<double> joint_position, joint_velocity;
