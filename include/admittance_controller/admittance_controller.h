@@ -3,6 +3,9 @@
 
 #include <signal.h>
 #include <fstream>
+#include <numeric>
+
+#include "spline_interpolation/spline.h" /* https://kluge.in-chemnitz.de/opensource/spline/ */
 
 #include <ros/ros.h>
 #include <ros/package.h>
@@ -27,8 +30,7 @@
 #include <moveit/robot_model/robot_model.h>
 #include <moveit/robot_state/robot_state.h>
 
-#include <eigen3/Eigen/Eigen>
-
+#include <Eigen/Eigen>
 
 using namespace Eigen;
 
@@ -80,10 +82,11 @@ class admittance_control {
         Eigen::MatrixXd J;
 
         // ---- Other Variables ---- //
-        bool force_callback, joint_state_callback, freedrive_mode_request;
+        bool force_callback, joint_state_callback;
         bool use_feedback_velocity, use_ur_real_robot, inertia_reduction;
         sensor_msgs::JointState joint_state;
         std::vector<double> joint_position, joint_velocity;
+        std::vector<Vector6d> filter_elements;
 
 //----------------------------------------------------------------------------------------------------------------------//
 
@@ -91,13 +94,16 @@ class admittance_control {
         ros::Subscriber force_sensor_subscriber, joint_states_subscriber, trajectory_execution_subscriber;
         ros::Publisher joint_trajectory_publisher, joint_group_vel_controller_publisher, ur10e_script_command_publisher;
 
-        // ---- ROS SERVICES ---- //
+        // ---- ROS SERVICE CLIENTS ---- //
         ros::ServiceClient switch_controller_client, list_controllers_client, zero_ft_sensor_client;
-        ros::ServiceServer ur10e_freedrive_mode_service;
         controller_manager_msgs::SwitchController switch_controller_srv;
         controller_manager_msgs::ListControllers list_controllers_srv;
         std_srvs::Trigger zero_ft_sensor_srv;
         
+        // ---- ROS SERVICE SERVERS ---- //
+        ros::ServiceServer ur10e_freedrive_mode_service, admittance_controller_activation_service;
+        bool admittance_control_request, freedrive_mode_request;
+
         // ---- ROS ACTIONS ---- //
         actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction> *trajectory_client;
         control_msgs::FollowJointTrajectoryGoal trajectory_goal;
@@ -108,7 +114,10 @@ class admittance_control {
         void force_sensor_Callback (const geometry_msgs::WrenchStamped::ConstPtr &);
         void joint_states_Callback (const sensor_msgs::JointState::ConstPtr &);
         void trajectory_execution_Callback (const admittance_controller::joint_trajectory::ConstPtr &);
+
+        // ---- SERVER CALLBACKS ---- //
         bool FreedriveMode_Service_Callback (std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res);
+        bool Admittance_Controller_Activation_Service_Callback (std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res);
 
         // ---- KINEMATIC MODEL FUNCTIONS ---- //
         Eigen::Matrix4d compute_fk (std::vector<double> joint_position, std::vector<double> joint_velocity);
@@ -122,21 +131,26 @@ class admittance_control {
         Vector6d limit_joint_dynamics (Vector6d joint_velocity);
         Vector6d compute_inertia_reduction (Vector6d velocity, Vector6d wrench);
 
-        // ---- CONTROL FUNCTIONS ---- //
+        // ---- TRAJECTORY FUNCTIONS ---- //
         void trajectory_execution (std::vector<sensor_msgs::JointState> trajectory);
+        std::vector<sensor_msgs::JointState> trajectory_scaling (admittance_controller::joint_trajectory trajectory);
+        std::vector<tk::spline> spline_interpolation (std::vector<sensor_msgs::JointState> trajectory);
+        
+        // ---- CONTROL FUNCTIONS ---- //
         void send_velocity_to_robot (Vector6d velocity);
         void send_position_to_robot (Vector6d position);
         void wait_for_position_reached (Vector6d desired_position);
         void freedrive_mode (bool activation);
 
         // ---- USEFUL FUNCTIONS ---- //
+        Vector6d low_pass_filter(Vector6d input_vec);
         void wait_for_callbacks_initialization (void);
         int sign (double num);
 
 //----------------------------------------------------------------------------------------------------------------------//
 
         // ---- DEBUG ---- //
-        std::ofstream ft_sensor;
+        std::ofstream ft_sensor_debug;
 
 };
 

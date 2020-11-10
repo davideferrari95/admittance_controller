@@ -45,6 +45,7 @@ generate_messages(
 catkin_package(
   INCLUDE_DIRS 
   include
+  lib
   CATKIN_DEPENDS
 	message_runtime
 )
@@ -55,6 +56,7 @@ catkin_package(
 
 include_directories(
   include
+  lib
   ${EIGEN3_INCLUDE_DIR}
   ${catkin_INCLUDE_DIRS}
 )

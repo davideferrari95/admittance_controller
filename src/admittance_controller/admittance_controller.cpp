@@ -32,6 +32,7 @@ admittance_control::admittance_control(
     
     // ---- ROS SERVICE SERVERS ---- //
     ur10e_freedrive_mode_service = nh.advertiseService("/admittance_controller/ur10e_freedrive_mode_service", &admittance_control::FreedriveMode_Service_Callback, this);
+    admittance_controller_activation_service = nh.advertiseService("/admittance_controller/admittance_controller_activation_service", &admittance_control::Admittance_Controller_Activation_Service_Callback, this);
 
     // ---- ROS SERVICE CLIENTS ---- //
     switch_controller_client = nh.serviceClient<controller_manager_msgs::SwitchController>("/controller_manager/switch_controller");
@@ -53,6 +54,7 @@ admittance_control::admittance_control(
     force_callback = false;
     joint_state_callback = false;
     freedrive_mode_request = false;
+    admittance_control_request = true;
 
     // ---- MoveIt Robot Model ---- //
     robot_model_loader = robot_model_loader::RobotModelLoader ("robot_description");
@@ -78,20 +80,20 @@ admittance_control::admittance_control(
     std::string package_path = ros::package::getPath("admittance_controller");
     ROS_INFO_STREAM_ONCE("Package Path:  " << package_path << std::endl);
     std::string save_file = package_path + "/debug/ft_sensor.txt";
-    ft_sensor = std::ofstream(save_file);
+    ft_sensor_debug = std::ofstream(save_file);
     
     // ---- WAIT FOR INITIALIZATION ---- //
     wait_for_callbacks_initialization();
 
     // ---- ZERO FT SENSOR ---- //
-    if (zero_ft_sensor_client.call(zero_ft_sensor_srv)) {ROS_INFO("FT Sensor Set To Zero");} else {ROS_ERROR("Failed to Call Service: \"/ur_hardware_interface/zero_ftsensor\"");}
+    while (!zero_ft_sensor_client.call(zero_ft_sensor_srv)) {ROS_ERROR("Wait for Service: \"/ur_hardware_interface/zero_ftsensor\"");}
 
 }
 
-admittance_control::~admittance_control() {ft_sensor.close();}
+admittance_control::~admittance_control() {ft_sensor_debug.close();}
 
 
-//------------------------------------------------------ CALLBACK -------------------------------------------------------//
+//--------------------------------------------------- TOPICS CALLBACK ---------------------------------------------------//
 
 
 void admittance_control::force_sensor_Callback (const geometry_msgs::WrenchStamped::ConstPtr &msg) {
@@ -105,8 +107,8 @@ void admittance_control::force_sensor_Callback (const geometry_msgs::WrenchStamp
     external_wrench[4] = force_sensor.wrench.torque.y;
     external_wrench[5] = force_sensor.wrench.torque.z;
     
-    for (int i = 0; i < 6; i++) {ft_sensor << external_wrench[i] << " ";}
-    ft_sensor << "\n";
+    for (int i = 0; i < 6; i++) {ft_sensor_debug << external_wrench[i] << " ";}
+    ft_sensor_debug << "\n";
 
     ROS_DEBUG_THROTTLE(2, "Sensor Force/Torque  ->  Fx: %.2f  Fy: %.2f  Fz: %.2f  |  Tx: %.2f  Ty: %.2f  Tz: %.2f", external_wrench[0], external_wrench[1], external_wrench[2], external_wrench[3], external_wrench[4], external_wrench[5]);
 
@@ -114,6 +116,9 @@ void admittance_control::force_sensor_Callback (const geometry_msgs::WrenchStamp
     for (int i = 3; i < 6; i++) {if(fabs(external_wrench[i]) < fabs(torque_dead_zone)) {external_wrench[i] = 0.0;}}
     
     ROS_INFO_THROTTLE(2, "Sensor Force/Torque Clamped  ->  Fx: %.2f  Fy: %.2f  Fz: %.2f  |  Tx: %.2f  Ty: %.2f  Tz: %.2f", external_wrench[0], external_wrench[1], external_wrench[2], external_wrench[3], external_wrench[4], external_wrench[5]);
+    
+    // LowPass Filter
+    external_wrench = low_pass_filter(external_wrench);
 
     force_callback = true;
 
@@ -144,13 +149,19 @@ void admittance_control::joint_states_Callback (const sensor_msgs::JointState::C
 
 void admittance_control::trajectory_execution_Callback (const admittance_controller::joint_trajectory::ConstPtr &msg) {
 
-    admittance_controller::joint_trajectory temp = *msg;
+    admittance_controller::joint_trajectory t = *msg;
+
+    t.trajectory = trajectory_scaling(t);
 
     ROS_WARN("Trajectory Execution Callback");
 
-    trajectory_execution(temp.trajectory);
+    trajectory_execution(t.trajectory);
 
 }
+
+
+//-------------------------------------------------- SERVICES CALLBACK --------------------------------------------------//
+
 
 bool admittance_control::FreedriveMode_Service_Callback (std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res) {
 
@@ -158,6 +169,24 @@ bool admittance_control::FreedriveMode_Service_Callback (std_srvs::SetBool::Requ
 
     freedrive_mode(freedrive_mode_request);
     
+    res.success = true;
+    return true;
+
+}
+
+bool admittance_control::Admittance_Controller_Activation_Service_Callback (std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res) {
+    
+    // Activate / Deactivate Admittance Controller
+    admittance_control_request = req.data;
+
+    if (admittance_control_request) {
+
+        // Deactivate FreeDrive Mode if Active
+        freedrive_mode_request = false;
+        freedrive_mode(freedrive_mode_request);
+    
+    }
+
     res.success = true;
     return true;
 
@@ -351,7 +380,7 @@ Vector6d admittance_control::compute_inertia_reduction (Vector6d velocity, Vecto
         
         if (wrench[i] == 0.0) {reduction[i] = 0;}
         else {reduction[i] = 1;}
-        
+    
     }
 
     return Vector6d(x_vel_array *= reduction);
@@ -359,7 +388,7 @@ Vector6d admittance_control::compute_inertia_reduction (Vector6d velocity, Vecto
 }
 
 
-//------------------------------------------------ TRAJECLTORY FUNCTIONS ------------------------------------------------//
+//------------------------------------------------ TRAJECTORY FUNCTIONS -------------------------------------------------//
 
 
 void admittance_control::trajectory_execution (std::vector<sensor_msgs::JointState> trajectory) {
@@ -383,6 +412,111 @@ void admittance_control::trajectory_execution (std::vector<sensor_msgs::JointSta
         ros::Duration(trajectory_rate).sleep();
 
     }
+
+}
+
+std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (admittance_controller::joint_trajectory trajectory) {
+
+    std::vector<sensor_msgs::JointState> scaled_trajectory;
+
+    // Target Velocity in [m/s]
+    double target_velocity = trajectory.target_velocity;
+
+    // Percentage of Scaling [%]
+    int velocity_scaling_percentage = trajectory.velocity_scaling_percentage;
+
+
+    // ---- NO-SCALING Requested ---- //
+    if ((velocity_scaling_percentage == 100 || velocity_scaling_percentage == 0) && target_velocity == 0) {
+
+        ROS_INFO("No-Scaling Requested");
+
+        // No-Changes on Input Trajectory
+        scaled_trajectory = trajectory.trajectory;
+    }
+
+    // ---- TARGET FIXED-VELOCITY Requested ---- //
+    else if (target_velocity != 0) {
+
+        ROS_INFO("Target-Velocity Scaling Requested");
+
+
+    }
+
+    // ---- PERCENTAGE-VELOCITY Requested ---- //
+    else if (velocity_scaling_percentage != 100 && velocity_scaling_percentage != 0) {
+
+        ROS_INFO("Percentage-Velocity Scaling Requested");
+
+    }
+
+
+    std::vector<tk::spline> spline6d = spline_interpolation (trajectory.trajectory);
+
+    // spline6d[joint_number](s) = q(s) con s € [0,1]
+
+    /* TODO:  QP Problem (CVXGEN?)
+     *  
+     *  INPUT:
+     *  
+     *      q(s) -> posso ottenere un vettore di punti q(s) in funzione del parametro s variabile tra 0 e 1
+     *      s(t) -> necessito legge oraria che faccia variare s da 0 a 1 con rampa accelerazione e decelerazione (impossibile)
+     *              
+     *              - il path generato ha dei punti in cui rallento e dei punti in cui accelero, quindi la distanza geometrica tra i punti P1...Pn varia
+     *              - se s(t) cresce linearmente otendo una velocità costante s_des da ottimizzare (passare da v_des a s_des ???)
+     *              - devo imporre il limite a q_dot e q_dot_dot 
+     */
+
+    // TODO: request double / half ecc velocity (int velocity_scaling_percentage)
+
+    // TODO: request fixed velocity (double target_velocity)
+
+    return scaled_trajectory;
+
+}
+
+std::vector<tk::spline> admittance_control::spline_interpolation (std::vector<sensor_msgs::JointState> trajectory) {
+
+    std::vector<Vector6d> waypoints;
+
+    // Assign trajectory points to waypoints vector
+    for (unsigned i = 0; i < trajectory.size(); i++) {
+
+        Vector6d next_point(trajectory[i].position.data());
+        waypoints.push_back(next_point);
+    
+    }
+
+    // Creation of s € [0,1] vector
+    std::vector<double> s;
+    for (unsigned i = 0; i < waypoints.size(); i++) {
+
+        double s_i = i * (1 / (waypoints.size()-1));
+        s.push_back(s_i);
+
+    }
+
+    std::vector<tk::spline> spline6d;
+
+    // Compute Spline for each Joint
+    for (unsigned joint_number = 0; joint_number < 6; joint_number++) {
+
+        // Create a Single-Joint Vector
+        std::vector<double> waypoints_1d;
+        for (unsigned i = 0; i < waypoints.size(); i++) {waypoints_1d.push_back(waypoints[i][joint_number]);}
+
+        // Compute Cubic Spline [Q(s), s € [0,1]]
+        tk::spline spline1d;
+        spline1d.set_points(s, waypoints_1d);
+
+        // Add Results to "spline6d" Vector
+        spline6d.push_back(spline1d);
+
+    }
+
+    // spline6d[joint_number](s) = q(s)
+
+    return spline6d;
 
 }
 
@@ -493,12 +627,20 @@ void admittance_control::freedrive_mode (bool activation) {
     if (activation) {
 
         // Turn ON FreedriveMode
+        ROS_WARN("FreeDrive Mode Activated");
         freedrive_mode_command.data = "def prog(): freedrive_mode() while(1) end";
+
+        // Deactivate Admittance Controller
+        admittance_control_request = false;
     
     } else {
 
         // Turn OFF FreedriveMode
+        ROS_WARN("FreeDrive Mode Dectivated");
         freedrive_mode_command.data = "def prog(): end";
+
+        // Activate Admittance Controller
+        admittance_control_request = true;
     
     }
 
@@ -507,6 +649,23 @@ void admittance_control::freedrive_mode (bool activation) {
 
 //--------------------------------------------------- UTILS FUNCTIONS ---------------------------------------------------//
 
+
+Vector6d admittance_control::low_pass_filter(Vector6d input_vec) {
+
+    // Adding new element to filter vector    
+    filter_elements.push_back(input_vec);
+
+    // Keep only the last 100 values of the vector
+    while (filter_elements.size() > 100) {filter_elements.erase(filter_elements.begin());}
+
+    // Median Filter (media = sum / N_elements)
+    Vector6d sum, median;
+    for (unsigned int i = 0; i < filter_elements.size(); i++) {sum += filter_elements[i];}
+    median = sum / filter_elements.size();
+    
+    return median;
+
+}
 
 void admittance_control::wait_for_callbacks_initialization (void) {
 
@@ -539,7 +698,11 @@ void admittance_control::spinner (void) {
 
     ros::spinOnce();
 
-    if (!freedrive_mode_request) {
+    // FreeDrive Mode
+    if (freedrive_mode_request) {ros::spinOnce();}
+    
+    // Admittance Controller
+    else if (admittance_control_request) {
 
         compute_admittance();
         send_velocity_to_robot(q_dot);
@@ -547,5 +710,5 @@ void admittance_control::spinner (void) {
         loop_rate.sleep();
 
     }
-    
+
 }
