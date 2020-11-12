@@ -86,7 +86,7 @@ admittance_control::admittance_control(
     wait_for_callbacks_initialization();
 
     // ---- ZERO FT SENSOR ---- //
-    while (!zero_ft_sensor_client.call(zero_ft_sensor_srv)) {ROS_ERROR("Wait for Service: \"/ur_hardware_interface/zero_ftsensor\"");}
+    while (use_ur_real_robot && !zero_ft_sensor_client.call(zero_ft_sensor_srv)) {ROS_WARN_THROTTLE(2,"Wait for Service: \"/ur_hardware_interface/zero_ftsensor\"");}
 
 }
 
@@ -417,9 +417,9 @@ void admittance_control::trajectory_execution (std::vector<sensor_msgs::JointSta
 
 std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (admittance_controller::joint_trajectory trajectory) {
 
-    std::vector<sensor_msgs::JointState> scaled_trajectory;
+    std::vector<sensor_msgs::JointState> input_trajectory = trajectory.trajectory, scaled_trajectory;
 
-    // Target Velocity in [m/s]
+    // Target Velocity [number]
     double target_velocity = trajectory.target_velocity;
 
     // Percentage of Scaling [%]
@@ -432,44 +432,122 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
         ROS_INFO("No-Scaling Requested");
 
         // No-Changes on Input Trajectory
-        scaled_trajectory = trajectory.trajectory;
+        scaled_trajectory = input_trajectory;
     }
 
-    // ---- TARGET FIXED-VELOCITY Requested ---- //
-    else if (target_velocity != 0) {
+    // ---- SCALING Requested ---- //
+    else {
 
-        ROS_INFO("Target-Velocity Scaling Requested");
+        // Spline Interpolation -> Q(s) = spline6d[joint_number](s) con s € [0,1]
+        std::vector<tk::spline> spline6d = spline_interpolation (input_trajectory);
 
+        // Creation of s € [0,1] vector
+        std::vector<double> s;
+        for (unsigned i = 0; i < input_trajectory.size(); i++) {
+            double s_i = double(i) * 1 / (double(input_trajectory.size()) - 1);
+            s.push_back(s_i);
+        }
 
+        std::vector<Array6d> s_dot_rec, q_dot_rec, v_geom_rec;
+        
+        // Find Registration Velocity ṡ -> q̇ = dq/ds * ṡ, ṡ = ds/dt
+        for (unsigned int i = 1; i < input_trajectory.size(); i++) {
+            
+            // dq = q[i] - q[i-1]
+            Array6d dq, ds(s[i] - s[i-1]), q_dot_rec_i(input_trajectory[i].velocity.data());
+            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {dq[joint_n] = spline6d[joint_n](s[i]) - spline6d[joint_n](s[i-1]);}
+
+            // geometric velocity (v_geom) = dq/ds = (q[i]-q[i-1])/(s[i]-s[i-1])
+            Array6d v_geom = dq / ds;
+
+            // joint velocity (q̇) = dq/ds * ṡ -> ṡ = q̇ * ds/dq = q̇ / v_geom
+            Array6d s_dot_rec_i = q_dot_rec_i / v_geom;
+
+            s_dot_rec.push_back(s_dot_rec_i);
+            q_dot_rec.push_back(q_dot_rec_i);
+            v_geom_rec.push_back(v_geom);
+
+        }
+
+        std::vector<Array6d> gain;
+
+        // ---- TARGET FIXED-VELOCITY Requested ---- //
+        if (target_velocity != 0) {
+
+            ROS_INFO("Target-Velocity Scaling Requested");
+
+            for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {
+
+                // Variable Gain -> Fixed Velocity
+                gain.push_back((1 / s_dot_rec[i]) * target_velocity);
+            
+            }
+        }
+
+        // ---- PERCENTAGE-VELOCITY Requested ---- //
+        else if (velocity_scaling_percentage != 100 && velocity_scaling_percentage != 0) {
+
+            ROS_INFO("Percentage-Velocity Scaling Requested");
+            
+            for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {
+                
+                // Fixed Gain
+                Array6d vel_scaling(velocity_scaling_percentage);
+                gain.push_back(vel_scaling / 100);
+
+            }
+        }
+
+        std::vector<Array6d> s_dot_des, q_dot_des;
+
+        // Scaling Registration Velocity * Requested Gain
+        for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {s_dot_des[i] = s_dot_rec[i] * gain[i];}
+
+        // Ricompute New q̇ = dq/ds * ṡ
+        for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {q_dot_des[i] = s_dot_des[i] * v_geom_rec[i];}
+
+        // Create Scaled Trajectory
+        for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {
+
+            scaled_trajectory[i].header   = input_trajectory[i].header;
+            scaled_trajectory[i].name     = input_trajectory[i].name;
+            scaled_trajectory[i].position = input_trajectory[i].position;
+            scaled_trajectory[i].velocity = std::vector<double>(q_dot_des[i].data(), q_dot_des[i].data() + q_dot_des[i].size());
+            
+        }
     }
 
-    // ---- PERCENTAGE-VELOCITY Requested ---- //
-    else if (velocity_scaling_percentage != 100 && velocity_scaling_percentage != 0) {
+    // ---- LIMIT JOINTS DYNAMIC ---- //
 
-        ROS_INFO("Percentage-Velocity Scaling Requested");
+    // Compute Sampling Time 
+    double sampling_time = (input_trajectory[1].header.stamp.sec + (input_trajectory[1].header.stamp.nsec * pow(10,-9))) - (input_trajectory[0].header.stamp.sec + (input_trajectory[0].header.stamp.nsec * pow(10,-9)));
+    std::vector<double> previous_velocity;
+    previous_velocity.resize(6);
 
+    for (unsigned int i = 0; i < scaled_trajectory.size(); i++) {
+
+        for (int joint_n = 0; joint_n < 6; joint_n++) {
+            
+            // Limit Joint Velocity
+            if (fabs(scaled_trajectory[i].velocity[joint_n]) > max_vel[joint_n]) {
+
+                ROS_DEBUG("Reached Maximum Velocity on Joint %d   ->   Velocity: %.3f   Limited at: %.3f", joint_n, scaled_trajectory[i].velocity[joint_n], sign(scaled_trajectory[i].velocity[joint_n]) * max_vel[joint_n]);
+                scaled_trajectory[i].velocity[joint_n] = sign(scaled_trajectory[i].velocity[joint_n]) * max_vel[joint_n];
+
+            }
+            
+            // Limit Joint Acceleration
+            if (fabs(scaled_trajectory[i].velocity[joint_n] - previous_velocity[joint_n]) > max_acc[joint_n] * sampling_time) {
+
+                ROS_DEBUG("Reached Maximum Acceleration on Joint %d   ->   Acceleration: %.3f   Limited at: %.3f", joint_n, (scaled_trajectory[i].velocity[joint_n] - previous_velocity[joint_n]) / sampling_time, previous_velocity[joint_n] +  sign(scaled_trajectory[i].velocity[joint_n] - previous_velocity[joint_n]) * max_acc[joint_n]);
+                scaled_trajectory[i].velocity[joint_n] = previous_velocity[joint_n] + sign(scaled_trajectory[i].velocity[joint_n] - previous_velocity[joint_n]) * max_acc[joint_n] * sampling_time;
+                previous_velocity = scaled_trajectory[i].velocity;
+
+            }
+
+        }
+        
     }
-
-
-    std::vector<tk::spline> spline6d = spline_interpolation (trajectory.trajectory);
-
-    // spline6d[joint_number](s) = q(s) con s € [0,1]
-
-    /* TODO:  QP Problem (CVXGEN?)
-     *  
-     *  INPUT:
-     *  
-     *      q(s) -> posso ottenere un vettore di punti q(s) in funzione del parametro s variabile tra 0 e 1
-     *      s(t) -> necessito legge oraria che faccia variare s da 0 a 1 con rampa accelerazione e decelerazione (impossibile)
-     *              
-     *              - il path generato ha dei punti in cui rallento e dei punti in cui accelero, quindi la distanza geometrica tra i punti P1...Pn varia
-     *              - se s(t) cresce linearmente otendo una velocità costante s_des da ottimizzare (passare da v_des a s_des ???)
-     *              - devo imporre il limite a q_dot e q_dot_dot 
-     */
-
-    // TODO: request double / half ecc velocity (int velocity_scaling_percentage)
-
-    // TODO: request fixed velocity (double target_velocity)
 
     return scaled_trajectory;
 
@@ -490,10 +568,8 @@ std::vector<tk::spline> admittance_control::spline_interpolation (std::vector<se
     // Creation of s € [0,1] vector
     std::vector<double> s;
     for (unsigned i = 0; i < waypoints.size(); i++) {
-
-        double s_i = i * (1 / (waypoints.size()-1));
+        double s_i = double(i) * 1 / (double(waypoints.size()) - 1);
         s.push_back(s_i);
-
     }
 
     std::vector<tk::spline> spline6d;
@@ -512,6 +588,22 @@ std::vector<tk::spline> admittance_control::spline_interpolation (std::vector<se
         // Add Results to "spline6d" Vector
         spline6d.push_back(spline1d);
 
+    }
+
+    // ---- DEBUG ---- //
+    for (unsigned int spline_number = 0; spline_number < 6; spline_number++) {
+    
+        tk::spline spline1d = spline6d[spline_number];
+        std::string package_path = ros::package::getPath("admittance_controller");
+        std::string save_file = package_path + "/debug/spline1d_joint" + std::to_string(spline_number+1) + "_debug.csv";
+        std::ofstream spline1d_debug = std::ofstream(save_file);
+
+        spline1d_debug << "Point,s\n";
+
+        for (unsigned int i = 0; i < waypoints.size(); i++) {
+            double x = double(i) / (double(waypoints.size()) - 1);
+            spline1d_debug << spline1d(x) << "," << x << "\n";
+        }
     }
 
     // spline6d[joint_number](s) = q(s)
