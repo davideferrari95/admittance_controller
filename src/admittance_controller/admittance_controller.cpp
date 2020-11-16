@@ -393,25 +393,38 @@ Vector6d admittance_control::compute_inertia_reduction (Vector6d velocity, Vecto
 
 void admittance_control::trajectory_execution (std::vector<sensor_msgs::JointState> trajectory) {
 
-    // Compute Trajectory Rate (Point 1 - Point 0)
-    double trajectory_rate = (trajectory[1].header.stamp.sec + (trajectory[1].header.stamp.nsec * pow(10,-9))) - (trajectory[0].header.stamp.sec + (trajectory[0].header.stamp.nsec * pow(10,-9)));
-
     // Move Robot to Poin 0 (Position Controller)
     Vector6d starting_position(trajectory[0].position.data());
     send_position_to_robot(starting_position);
 
-    for (unsigned i = 0; i < trajectory.size(); i++) {
+    // Creation of a Stop-Point (zero velocity) in the end of the trajectory
+    sensor_msgs::JointState stop_point;
+    stop_point.name = trajectory[0].name;
+    stop_point.position = trajectory[trajectory.size()-1].position;
+    std::fill(stop_point.velocity.begin(), stop_point.velocity.end(), 0);
+    long double time_stamp = trajectory[trajectory.size()-1].header.stamp.sec + (trajectory[1].header.stamp.sec  - trajectory[0].header.stamp.sec) 
+                           + trajectory[trajectory.size()-1].header.stamp.nsec * pow(10,-9) + (trajectory[1].header.stamp.nsec - trajectory[0].header.stamp.nsec);
+    stop_point.header.stamp.sec  = std::floor(time_stamp);
+    stop_point.header.stamp.nsec = (time_stamp - std::floor(time_stamp)) * pow(10,9);
 
-        // Read each trajectory point velocities
-        Vector6d velocity(trajectory[i].velocity.data());
+    // Add Stop-Point in the end of the trajectory
+    trajectory.push_back(stop_point);
+
+    for (unsigned i = 0; i < trajectory.size() - 1; i++) {
+
+        // Compute Trajectory Rate (Point [i+1] - Point [i])
+        long double trajectory_rate = (trajectory[i+1].header.stamp.sec + (trajectory[i+1].header.stamp.nsec * pow(10,-9))) - (trajectory[i].header.stamp.sec + (trajectory[i].header.stamp.nsec * pow(10,-9)));
 
         // Command robot in velocity
-        send_velocity_to_robot(velocity);
+        send_velocity_to_robot(Vector6d(trajectory[i].velocity.data()));
 
         // Sleep
         ros::Duration(trajectory_rate).sleep();
 
     }
+
+    // End-Trajectory Stop-Point 
+    send_velocity_to_robot(Vector6d(stop_point.velocity.data()));
 
 }
 
@@ -438,24 +451,41 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
     // ---- SCALING Requested ---- //
     else {
 
-        // Spline Interpolation -> Q(s) = spline6d[joint_number](s) con s € [0,1]
-        std::vector<tk::spline> spline6d = spline_interpolation (input_trajectory);
+        // Creation of a Stop-Point (zero velocity) in the end of the trajectory
+        sensor_msgs::JointState stop_point;
+        stop_point.name = input_trajectory[0].name;
+        stop_point.position = input_trajectory[input_trajectory.size()-1].position;
+        std::fill(stop_point.velocity.begin(), stop_point.velocity.end(), 0);
+        long double time_stamp = input_trajectory[input_trajectory.size()-1].header.stamp.sec + (input_trajectory[1].header.stamp.sec  - input_trajectory[0].header.stamp.sec) 
+                               + input_trajectory[input_trajectory.size()-1].header.stamp.nsec * pow(10,-9) + (input_trajectory[1].header.stamp.nsec - input_trajectory[0].header.stamp.nsec);
+        stop_point.header.stamp.sec  = std::floor(time_stamp);
+        stop_point.header.stamp.nsec = (time_stamp - std::floor(time_stamp)) * pow(10,9);
 
-        // Creation of s € [0,1] vector
+        // Add Stop-Point in the end of the trajectory
+        input_trajectory.push_back(stop_point);
+
+        std::vector<Vector6d> input_positions;
+
+        // Get Input Positions q(t) and Velocities q̇(t)
+        for (unsigned i = 0; i < input_trajectory.size() - 1; i++) {input_positions.push_back(Vector6d(input_trajectory[i].position.data()));}
+
+        // Spline Interpolation -> Q(s) = spline6d[joint_number](s) con s € [0,1]
+        std::vector<tk::spline> q_spline6d = spline_interpolation (input_positions);
+
+        // Creation of s € [0,1] vector (s[0] = 0)
         std::vector<double> s;
-        for (unsigned i = 0; i < input_trajectory.size(); i++) {
-            double s_i = double(i) * 1 / (double(input_trajectory.size()) - 1);
-            s.push_back(s_i);
-        }
 
         std::vector<Array6d> s_dot_rec, q_dot_rec, v_geom_rec;
         
         // Find Registration Velocity ṡ -> q̇ = dq/ds * ṡ, ṡ = ds/dt
-        for (unsigned int i = 1; i < input_trajectory.size(); i++) {
+        for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {
             
-            // dq = q[i] - q[i-1]
-            Array6d dq, ds(s[i] - s[i-1]), q_dot_rec_i(input_trajectory[i].velocity.data());
-            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {dq[joint_n] = spline6d[joint_n](s[i]) - spline6d[joint_n](s[i-1]);}
+            // Creation of s € [0,1] vector
+            s.push_back(double(i) * 1 / (double(input_trajectory.size() - 1) - 1));
+            
+            // dq = q[i+1] - q[i]
+            Array6d dq, ds(s[i+1] - s[i]), q_dot_rec_i(input_trajectory[i].velocity.data());
+            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {dq[joint_n] = q_spline6d[joint_n](s[i+1]) - q_spline6d[joint_n](s[i]);}
 
             // geometric velocity (v_geom) = dq/ds = (q[i]-q[i-1])/(s[i]-s[i-1])
             Array6d v_geom = dq / ds;
@@ -470,6 +500,7 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
         }
 
         std::vector<Array6d> gain;
+        std::vector<double> time_gain;
 
         // ---- TARGET FIXED-VELOCITY Requested ---- //
         if (target_velocity != 0) {
@@ -480,6 +511,9 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
 
                 // Variable Gain -> Fixed Velocity
                 gain.push_back((1 / s_dot_rec[i]) * target_velocity);
+
+                // TODO: se richiedo una v costante (quindi non doppio/metà v_rec) il time_gain è diverso per ogni giunto
+                // time_gain.push_back();
             
             }
         }
@@ -495,36 +529,86 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
                 Array6d vel_scaling(velocity_scaling_percentage);
                 gain.push_back(vel_scaling / 100);
 
+                // Time Gain
+                time_gain.push_back(velocity_scaling_percentage / 100);
+
             }
         }
 
         std::vector<Array6d> s_dot_des, q_dot_des;
+        s_dot_des.resize(s_dot_rec.size());
+        q_dot_des.resize(q_dot_rec.size());
 
-        // Scaling Registration Velocity * Requested Gain
-        for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {s_dot_des[i] = s_dot_rec[i] * gain[i];}
+        bool time_scaling = true;
 
-        // Ricompute New q̇ = dq/ds * ṡ
-        for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {q_dot_des[i] = s_dot_des[i] * v_geom_rec[i];}
+        // ---- TIME SCALING ---- //
+        if (time_scaling) {
 
-        // Create Scaled Trajectory
-        for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {
+            // ---- Change ṡ and t, ds = cost, trajectory points = cost ---- //
 
-            scaled_trajectory[i].header   = input_trajectory[i].header;
-            scaled_trajectory[i].name     = input_trajectory[i].name;
-            scaled_trajectory[i].position = input_trajectory[i].position;
-            scaled_trajectory[i].velocity = std::vector<double>(q_dot_des[i].data(), q_dot_des[i].data() + q_dot_des[i].size());
+            // Time Vectors Creation
+            std::vector<ros::Time> time_rec, time_des;
+            time_rec.resize(input_trajectory.size());
+            time_des.resize(input_trajectory.size());
+
+            // Get Registration Time Vector
+            for (unsigned int i = 0; i < input_trajectory.size(); i++) {
+                time_rec[i].sec  = input_trajectory[i].header.stamp.sec;
+                time_rec[i].nsec = input_trajectory[i].header.stamp.nsec;
+            }
+
+            // Scaling Registration Velocity * Requested Gain
+            for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {s_dot_des[i] = s_dot_rec[i] * gain[i];}
+
+            // Ricompute New q̇ = dq/ds * ṡ
+            for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {q_dot_des[i] = s_dot_des[i] * v_geom_rec[i];}
+
+            // Scaling Registration Time / Requested Gain
+            for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {
+                
+                long double dt_rec = (time_rec[i+1].sec + time_rec[i+1].nsec * pow(10,-9)) - (time_rec[i].sec + time_rec[i].nsec * pow(10,-9));
+                long double dt_des = dt_rec / time_gain[i];
+
+                // Assign Starting Time
+                if (i = 0) {time_des[0] = time_rec[0];}
+
+                // Assign Next Time (floor = get only integer part)
+                long double t_des  = time_des[i].sec + time_des[i].nsec * pow(10,-9) + dt_des;
+                time_des[i+1].sec  = std::floor(t_des);
+                time_des[i+1].nsec = (t_des - std::floor(dt_des)) * pow(10,9);
+                
+            }
+            
+            // Create Scaled Trajectory
+            for (unsigned int i = 0; i < input_trajectory.size(); i++) {
+                
+                sensor_msgs::JointState temp;
+                temp.header.stamp = time_des[i];
+                temp.name         = input_trajectory[i].name;
+                temp.position     = input_trajectory[i].position;
+                temp.velocity     = std::vector<double>(q_dot_des[i].data(), q_dot_des[i].data() + q_dot_des[i].size());
+
+                scaled_trajectory.push_back(temp);
+                
+            }
             
         }
+
+        // ---- SPACE SCALING ---- //
+        else if (!time_scaling) {
+
+            // ---- Change ṡ and ds, t = cost, trajectory points != cost ---- //
+
+        }
+
     }
 
     // ---- LIMIT JOINTS DYNAMIC ---- //
 
-    // Compute Sampling Time 
-    double sampling_time = (input_trajectory[1].header.stamp.sec + (input_trajectory[1].header.stamp.nsec * pow(10,-9))) - (input_trajectory[0].header.stamp.sec + (input_trajectory[0].header.stamp.nsec * pow(10,-9)));
-    std::vector<double> previous_velocity;
-    previous_velocity.resize(6);
+    for (unsigned int i = 1; i < scaled_trajectory.size(); i++) {
 
-    for (unsigned int i = 0; i < scaled_trajectory.size(); i++) {
+        // Compute Sampling Time
+        double sampling_time = (input_trajectory[i].header.stamp.sec + (input_trajectory[i].header.stamp.nsec * pow(10,-9))) - (input_trajectory[i-1].header.stamp.sec + (input_trajectory[i-1].header.stamp.nsec * pow(10,-9)));
 
         for (int joint_n = 0; joint_n < 6; joint_n++) {
             
@@ -537,11 +621,10 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
             }
             
             // Limit Joint Acceleration
-            if (fabs(scaled_trajectory[i].velocity[joint_n] - previous_velocity[joint_n]) > max_acc[joint_n] * sampling_time) {
+            if (fabs(scaled_trajectory[i].velocity[joint_n] - scaled_trajectory[i-1].velocity[joint_n]) > max_acc[joint_n] * sampling_time) {
 
-                ROS_DEBUG("Reached Maximum Acceleration on Joint %d   ->   Acceleration: %.3f   Limited at: %.3f", joint_n, (scaled_trajectory[i].velocity[joint_n] - previous_velocity[joint_n]) / sampling_time, previous_velocity[joint_n] +  sign(scaled_trajectory[i].velocity[joint_n] - previous_velocity[joint_n]) * max_acc[joint_n]);
-                scaled_trajectory[i].velocity[joint_n] = previous_velocity[joint_n] + sign(scaled_trajectory[i].velocity[joint_n] - previous_velocity[joint_n]) * max_acc[joint_n] * sampling_time;
-                previous_velocity = scaled_trajectory[i].velocity;
+                ROS_DEBUG("Reached Maximum Acceleration on Joint %d   ->   Acceleration: %.3f   Limited at: %.3f", joint_n, (scaled_trajectory[i].velocity[joint_n] - scaled_trajectory[i-1].velocity[joint_n]) / sampling_time, scaled_trajectory[i-1].velocity[joint_n] +  sign(scaled_trajectory[i].velocity[joint_n] - scaled_trajectory[i-1].velocity[joint_n]) * max_acc[joint_n]);
+                scaled_trajectory[i].velocity[joint_n] = scaled_trajectory[i-1].velocity[joint_n] + sign(scaled_trajectory[i].velocity[joint_n] - scaled_trajectory[i-1].velocity[joint_n]) * max_acc[joint_n] * sampling_time;
 
             }
 
@@ -553,33 +636,23 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
 
 }
 
-std::vector<tk::spline> admittance_control::spline_interpolation (std::vector<sensor_msgs::JointState> trajectory) {
+std::vector<tk::spline> admittance_control::spline_interpolation (std::vector<Vector6d> data_vector) {
 
-    std::vector<Vector6d> waypoints;
-
-    // Assign trajectory points to waypoints vector
-    for (unsigned i = 0; i < trajectory.size(); i++) {
-
-        Vector6d next_point(trajectory[i].position.data());
-        waypoints.push_back(next_point);
-    
-    }
+    std::vector<tk::spline> spline6d;
 
     // Creation of s € [0,1] vector
     std::vector<double> s;
-    for (unsigned i = 0; i < waypoints.size(); i++) {
-        double s_i = double(i) * 1 / (double(waypoints.size()) - 1);
+    for (unsigned i = 0; i < data_vector.size(); i++) {
+        double s_i = i * 1 / (double(data_vector.size()) - 1);
         s.push_back(s_i);
     }
-
-    std::vector<tk::spline> spline6d;
 
     // Compute Spline for each Joint
     for (unsigned joint_number = 0; joint_number < 6; joint_number++) {
 
         // Create a Single-Joint Vector
         std::vector<double> waypoints_1d;
-        for (unsigned i = 0; i < waypoints.size(); i++) {waypoints_1d.push_back(waypoints[i][joint_number]);}
+        for (unsigned i = 0; i < data_vector.size(); i++) {waypoints_1d.push_back(data_vector[i][joint_number]);}
 
         // Compute Cubic Spline [Q(s), s € [0,1]]
         tk::spline spline1d;
@@ -600,8 +673,8 @@ std::vector<tk::spline> admittance_control::spline_interpolation (std::vector<se
 
         spline1d_debug << "Point,s\n";
 
-        for (unsigned int i = 0; i < waypoints.size(); i++) {
-            double x = double(i) / (double(waypoints.size()) - 1);
+        for (unsigned int i = 0; i < data_vector.size(); i++) {
+            double x = i / (double(data_vector.size()) - 1);
             spline1d_debug << spline1d(x) << "," << x << "\n";
         }
     }
