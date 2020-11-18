@@ -136,7 +136,6 @@ class admittance_control {
         std::vector<sensor_msgs::JointState> trajectory_scaling (admittance_controller::joint_trajectory trajectory);
         std::vector<tk::spline> spline_interpolation (std::vector<Vector6d> data_vector, double spline_lenght);
         sensor_msgs::JointState add_stop_point(std::vector<sensor_msgs::JointState> *trajectory);
-
         
         // ---- CONTROL FUNCTIONS ---- //
         void send_velocity_to_robot (Vector6d velocity);
