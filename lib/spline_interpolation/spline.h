@@ -112,6 +112,7 @@ public:
                     const std::vector<double>& y, bool cubic_spline=true);
     double operator() (double x) const;
     double deriv(int order, double x) const;
+    int get_spline_size();
 };
 
 
@@ -452,6 +453,12 @@ double spline::deriv(int order, double x) const
         }
     }
     return interpol;
+}
+
+int spline::get_spline_size() {
+
+    return m_x.size();
+
 }
 
 
