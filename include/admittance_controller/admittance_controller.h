@@ -4,6 +4,7 @@
 #include <signal.h>
 #include <fstream>
 #include <numeric>
+#include <math.h>
 
 #include "spline_interpolation/spline.h" /* https://kluge.in-chemnitz.de/opensource/spline/ */
 
@@ -39,6 +40,8 @@ typedef Matrix<double, 6, 1> Vector6d;
 typedef Matrix<double, 6, 6> Matrix6d;
 typedef Array<double, 6, 1> Array6d;
 
+#define GET_VARIABLE_NAME(Variable) (#Variable)
+
 class admittance_control {
 
     public:
@@ -54,6 +57,9 @@ class admittance_control {
         ~admittance_control();
 
         void spinner (void);
+
+        bool simple_debug;
+        bool complete_debug;
 
     private:
 
@@ -134,7 +140,8 @@ class admittance_control {
         // ---- TRAJECTORY FUNCTIONS ---- //
         void trajectory_execution (std::vector<sensor_msgs::JointState> trajectory);
         std::vector<sensor_msgs::JointState> trajectory_scaling (admittance_controller::joint_trajectory trajectory);
-        std::vector<tk::spline> spline_interpolation (std::vector<Vector6d> data_vector, double spline_lenght);
+        std::vector<tk::spline> spline_interpolation (std::vector<Vector6d> data_vector, double spline_lenght, std::string output_file);
+        std::vector<tk::spline> spline_interpolation (std::vector<Array6d> data_vector, double spline_lenght, std::string output_file);
         sensor_msgs::JointState add_stop_point(std::vector<sensor_msgs::JointState> *trajectory);
         
         // ---- CONTROL FUNCTIONS ---- //
