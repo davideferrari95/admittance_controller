@@ -80,11 +80,11 @@ admittance_control::admittance_control(
         ROS_INFO_STREAM_ONCE("Cycle Time: " << loop_rate.expectedCycleTime().toSec()*1000 << " ms" << std::endl);
     }
     
-    // ---- DEBUG OFSTREAM ---- //
-    if (simple_debug) {
+    // ---- DEBUG ---- //
+    if (complete_debug) {
         std::string package_path = ros::package::getPath("admittance_controller");
         ROS_INFO_STREAM_ONCE("Package Path:  " << package_path << std::endl);
-        std::string save_file = package_path + "/debug/ft_sensor.txt";
+        std::string save_file = package_path + "/debug/ft_sensor.csv";
         ft_sensor_debug = std::ofstream(save_file);
     }
 
@@ -115,8 +115,8 @@ void admittance_control::force_sensor_Callback (const geometry_msgs::WrenchStamp
     external_wrench[5] = force_sensor.wrench.torque.z;
     
     // ---- DEBUG ---- //
-    if (simple_debug) {
-        for (int i = 0; i < 6; i++) {ft_sensor_debug << external_wrench[i] << " ";}
+    if (complete_debug) {
+        for (int i = 0; i < 6; i++) {ft_sensor_debug << external_wrench[i] << ",";}
         ft_sensor_debug << "\n";
     }
 
@@ -162,13 +162,11 @@ void admittance_control::joint_states_Callback (const sensor_msgs::JointState::C
 
 void admittance_control::trajectory_execution_Callback (const admittance_controller::joint_trajectory::ConstPtr &msg) {
 
-    admittance_controller::joint_trajectory t = *msg;
-
-    t.trajectory = trajectory_scaling(t);
-
     ROS_WARN("Trajectory Execution Callback");
+    
+    std::vector<sensor_msgs::JointState> temp = trajectory_scaling(*msg);
 
-    trajectory_execution(t.trajectory);
+    trajectory_execution(temp);
 
 }
 
@@ -392,6 +390,40 @@ Vector6d admittance_control::limit_joint_dynamics (Vector6d joint_velocity) {
     return joint_velocity;
 
 }
+   
+std::vector<sensor_msgs::JointState> admittance_control::limit_joint_dynamics (std::vector<sensor_msgs::JointState> trajectory) {
+
+    // ---- LIMIT JOINTS DYNAMIC ---- //
+    for (unsigned int i = 1; i < trajectory.size(); i++) {
+
+        // Compute Sampling Time
+        double sampling_time = (trajectory[i].header.stamp.toSec() - trajectory[i-1].header.stamp.toSec());
+
+        for (int joint_n = 0; joint_n < 6; joint_n++) {
+            
+            // Limit Joint Velocity
+            if (fabs(trajectory[i].velocity[joint_n]) > max_vel[joint_n]) {
+
+                ROS_DEBUG("Reached Maximum Velocity on Joint %d   ->   Velocity: %.3f   Limited at: %.3f", joint_n, trajectory[i].velocity[joint_n], sign(trajectory[i].velocity[joint_n]) * max_vel[joint_n]);
+                trajectory[i].velocity[joint_n] = sign(trajectory[i].velocity[joint_n]) * max_vel[joint_n];
+
+            }
+            
+            // Limit Joint Acceleration
+            if (fabs(trajectory[i].velocity[joint_n] - trajectory[i-1].velocity[joint_n]) > max_acc[joint_n] * sampling_time) {
+
+                ROS_DEBUG("Reached Maximum Acceleration on Joint %d   ->   Acceleration: %.3f   Limited at: %.3f", joint_n, (trajectory[i].velocity[joint_n] - trajectory[i-1].velocity[joint_n]) / sampling_time, trajectory[i-1].velocity[joint_n] +  sign(trajectory[i].velocity[joint_n] - trajectory[i-1].velocity[joint_n]) * max_acc[joint_n]);
+                trajectory[i].velocity[joint_n] = trajectory[i-1].velocity[joint_n] + sign(trajectory[i].velocity[joint_n] - trajectory[i-1].velocity[joint_n]) * max_acc[joint_n] * sampling_time;
+
+            }
+
+        }
+        
+    }
+
+    return trajectory;
+
+}
 
 Vector6d admittance_control::compute_inertia_reduction (Vector6d velocity, Vector6d wrench) {
 
@@ -440,7 +472,7 @@ void admittance_control::trajectory_execution (std::vector<sensor_msgs::JointSta
 
 }
 
-sensor_msgs::JointState admittance_control::add_stop_point(std::vector<sensor_msgs::JointState> *trajectory) {
+sensor_msgs::JointState admittance_control::add_stop_point (std::vector<sensor_msgs::JointState> *trajectory) {
 
     std::vector<sensor_msgs::JointState> trajectory_temp = *trajectory;
 
@@ -455,6 +487,30 @@ sensor_msgs::JointState admittance_control::add_stop_point(std::vector<sensor_ms
     trajectory_temp.push_back(stop_point);
     trajectory = &trajectory_temp;
 
+    return stop_point;
+
+}
+
+void admittance_control::trajectory_debug_csv (std::vector<sensor_msgs::JointState> trajectory, std::string trajectory_name) {
+
+    std::string package_path = ros::package::getPath("admittance_controller");
+    std::string save_file = package_path + "/debug/" + trajectory_name + "_debug.csv";
+    std::ofstream trajectory_debug = std::ofstream(save_file);
+
+    trajectory_debug << "frame_id,seq,sec,nsec,     ,pos_joint1,pos_joint2,pos_joint2,pos_joint4,pos_joint5,pos_joint6,     ,vel_joint1,vel_joint2,vel_joint3,vel_joint4,vel_joint5,vel_joint6\n\n";
+    
+    for (unsigned int i = 0; i < trajectory.size(); i++) {
+    
+        trajectory_debug << trajectory[i].header.frame_id << "," << trajectory[i].header.seq << "," << trajectory[i].header.stamp.sec << "," << trajectory[i].header.stamp.nsec << ", ,";
+    
+        for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {trajectory_debug << trajectory[i].position[joint_n] << ",";} trajectory_debug << " ,";
+    
+        for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {trajectory_debug << trajectory[i].velocity[joint_n] << ",";} trajectory_debug << "\n";
+    
+    }
+    
+    trajectory_debug.close();
+        
 }
 
 
@@ -464,38 +520,34 @@ sensor_msgs::JointState admittance_control::add_stop_point(std::vector<sensor_ms
 std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (admittance_controller::joint_trajectory trajectory) {
 
     std::vector<sensor_msgs::JointState> input_trajectory = trajectory.trajectory, scaled_trajectory;
-
-    // Target Velocity [number]
+    
+    // ---- DEBUG ---- //
+    if (simple_debug) {trajectory_debug_csv(input_trajectory,"input_trajectory");}
+    
+    // Target Velocity [number] | Percentage of Scaling [%]
     double target_velocity = trajectory.target_velocity;
-
-    // Percentage of Scaling [%]
-    int velocity_scaling_percentage = trajectory.velocity_scaling_percentage;
-
+    int velocity_percentage = trajectory.velocity_scaling_percentage;
+    
     //TODO: ---- DEBUG ---- // 
-    velocity_scaling_percentage = 50;
+    velocity_percentage = 50;
 
-    // ---- NO-SCALING Requested ---- //
-    if ((velocity_scaling_percentage == 100 || velocity_scaling_percentage == 0) && target_velocity == 0) {
+    // ---- Check Requested Scaling ---- //
+    bool no_scaling_requested = false, target_scaling_requested = false, percentage_scaling_requested = false;
+    check_requested_scaling (trajectory, &no_scaling_requested, &target_scaling_requested, &percentage_scaling_requested);
 
-        ROS_INFO("No-Scaling Requested");
 
-        // No-Changes on Input Trajectory
-        scaled_trajectory = input_trajectory;
-    }
+    // ---- NO-SCALING Requested ---- //  ->  No-Changes on Input Trajectory
+    if (no_scaling_requested) {scaled_trajectory = input_trajectory;}
+    
 
-    // ---- SCALING Requested ---- //
-    else {
-
-        bool target_velocity_scaling_requested = false, percentage_velocity_scaling_requested = false;
-
-        // ---- TARGET FIXED-VELOCITY Requested ---- //
-        if (target_velocity != 0) {target_velocity_scaling_requested = true; ROS_INFO("Target-Velocity Scaling Requested");}
-
-        // ---- PERCENTAGE-VELOCITY Requested ---- //
-        else if (velocity_scaling_percentage != 100 && velocity_scaling_percentage != 0) {percentage_velocity_scaling_requested = true; ROS_INFO("Percentage-Velocity Scaling Requested");}
+    // ---- TRAJECTORY SCALING Requested ---- //
+    else if (target_scaling_requested || percentage_scaling_requested) {
 
         // Creation of a Stop-Point (zero velocity) in the end of the trajectory
         sensor_msgs::JointState stop_point = add_stop_point(&input_trajectory);
+
+
+        // ---- Q(s) SPLINE INTERPOLATION ---- //
 
         // Get Input Positions q(t)
         std::vector<Vector6d> input_positions;
@@ -507,264 +559,329 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
         // Spline Interpolation -> Q(s) = spline6d[joint_number](s) con s € [0,T]
         std::vector<tk::spline> q_spline6d = spline_interpolation (input_positions, trajectory_time, GET_VARIABLE_NAME(input_positions));
 
-        std::vector<double> s_rec;
-        std::vector<Array6d> s_dot_rec, q_dot_rec, v_geom_rec, dq_rec, ds_rec;
-        
-        // Find Registration Velocity ṡ -> q̇ = dq/ds * ṡ, ṡ = ds/dt
-        for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {
-            
-            // Creation of s € [0,spline_length] vector
-            if (i == 0) {s_rec.push_back(q_spline6d[0].get_spline_size() * 0 / (double(input_trajectory.size() - 1) - 1));}
-            s_rec.push_back(q_spline6d[0].get_spline_size() * (i+1) / (double(input_trajectory.size() - 1) - 1));
-            ROS_INFO_ONCE("Spline Interpolation with s between [0,%f]", q_spline6d[0].get_spline_size());
 
-            // dq = q[i+1] - q[i]
-            Array6d dq, ds(s_rec[i+1] - s_rec[i]), q_dot_rec_i(input_trajectory[i].velocity.data());
-            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {dq[joint_n] = q_spline6d[joint_n](s_rec[i+1]) - q_spline6d[joint_n](s_rec[i]);}
+        // ---- FIND REGISTRATION VELOCITY ---- //  ṡ -> q̇ = dq/ds * ṡ, ṡ = ds/dt
+        std::vector<Array6d> s_dot_rec = compute_registration_velocity (input_trajectory, q_spline6d);
+     
+        // ---- COMPUTE SCALED VELOCITY ---- //  ṡ_rec * requested_gain
+        std::vector<Array6d> s_dot_des = compute_scaled_velocity (input_trajectory, s_dot_rec, target_scaling_requested, percentage_scaling_requested, target_velocity, velocity_percentage);
 
-            // geometric velocity (v_geom) = dq/ds = (q[i+1]-q[i])/(s[i+1]-s[i])
-            Array6d v_geom = dq / ds;
-
-            // joint velocity (q̇) = dq/ds * ṡ -> ṡ = q̇ * ds/dq = q̇ / v_geom
-            Array6d s_dot_rec_i = q_dot_rec_i / v_geom;
+        // Spline Interpolation -> Ṡ(t) = spline6d[joint_number](s) con s € [0,T]
+        std::vector<tk::spline> s_dot_spline6d = spline_interpolation (s_dot_des, trajectory_time, GET_VARIABLE_NAME(s_dot_des));
 
 
-            // Check Data Integrity (check nan, inf, v_geom!=0)
-            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {
-                
-                // Assign 0 if nan
-                if (std::isnan(s_dot_rec_i[joint_n])) {s_dot_rec_i[joint_n] = 0;}
-                if (std::isnan(v_geom[joint_n])) {v_geom[joint_n] = 0;}
+        // ---- COMPUTE S_DES ---- //  s_des(t)
+        std::vector<Array6d> s_des = compute_s_des (input_trajectory, s_dot_spline6d);
 
-                // Assign 0 if inf
-                if (std::isinf(s_dot_rec_i[joint_n])) {s_dot_rec_i[joint_n] = 0;}
-                if (std::isinf(v_geom[joint_n])) {v_geom[joint_n] = 0;}
-
-                // Assign 0 if v_geom = 0
-                if (v_geom[joint_n] == 0) {s_dot_rec_i[joint_n] = 0;}
-
-                // Assign 0 if dq < pow(e,-4)
-                // if (dq[joint_n] < pow(M_E,-4)) {s_dot_rec_i[joint_n] = 0;}
-                
-            }
-
-            s_dot_rec.push_back(s_dot_rec_i);
-            q_dot_rec.push_back(q_dot_rec_i);
-            v_geom_rec.push_back(v_geom);
-            dq_rec.push_back(dq);
-            ds_rec.push_back(ds);
-
-        }
-
-        // ---- DEBUG ---- //
-        if (complete_debug) {
-            std::string package_path = ros::package::getPath("admittance_controller");
-            std::string save_file = package_path + "/debug/s_dot_rec_debug.csv";
-            std::ofstream s_dot_rec_debug = std::ofstream(save_file);
-            s_dot_rec_debug << "s_dot_rec, ,q_dot_rec, ,dq, ,ds, ,srec\n";
-            for (unsigned int i = 0; i < s_dot_rec.size(); i++) {
-                for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {s_dot_rec_debug << s_dot_rec[i][joint_n] << ",=," << q_dot_rec[i][joint_n] << ",/," << dq_rec[i][joint_n] << ",/," << ds_rec[i][joint_n] << ", ," << s_rec[i] << "\n";} s_dot_rec_debug << "\n";}
-            s_dot_rec_debug.close();
-        }
-        
-
-std::cout << 1 << std::endl;
-
-        std::vector<Array6d> gain;
-
-        // ---- TARGET FIXED-VELOCITY Requested ---- //
-        if (target_velocity_scaling_requested) {
-
-            for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {
-
-                // Variable Gain -> Fixed Velocity
-                gain.push_back((1 / s_dot_rec[i]) * target_velocity);
-            
-            }
-        }
-
-        // ---- PERCENTAGE-VELOCITY Requested ---- //
-        else if (percentage_velocity_scaling_requested) {
-            
-            for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {
-                
-                // Fixed Gain
-                Array6d vel_scaling(velocity_scaling_percentage);
-                gain.push_back(vel_scaling / 100);
-
-            }
-        }
-
-        std::vector<Array6d> s_dot_des, s_des;
-
-        // Scaling Registration Velocity * Requested Gain
-        for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {s_dot_des.push_back(s_dot_rec[i] * gain[i]);}
-
-        // ---- DEBUG ---- //
-        if (simple_debug) { //TODO: complete_debug
-            std::string package_path = ros::package::getPath("admittance_controller");
-            std::string save_file = package_path + "/debug/s_dot_des_debug.csv";
-            std::ofstream s_dot_des_debug = std::ofstream(save_file);
-            s_dot_des_debug << "s_dot_rec, ,gain, ,s_dot_des\n";
-            for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {
-                for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {s_dot_des_debug << s_dot_rec[i][joint_n] << ",*," << gain[i][joint_n] << ",=," << s_dot_des[i][joint_n] << "\n";} s_dot_des_debug << "\n";}
-            s_dot_des_debug.close();
-        }
-
-std::cout << 2 << std::endl;
-
-        const double T = trajectory_time;
-        const double sampling_time = (input_trajectory[1].header.stamp - input_trajectory[0].header.stamp).toSec();
-        ROS_INFO("Trajectory Time: %lf", T);
-        ROS_INFO("Sampling Time: %lf", sampling_time);
-
-        // Spline Interpolation -> Q̇(s) = spline6d[joint_number](s) con s € [0,T]
-        std::vector<tk::spline> s_dot_spline6d = spline_interpolation (s_dot_des, T, GET_VARIABLE_NAME(s_dot_des));
-        
-        unsigned int k = 0;
-
-        while (true) {
-
-            Array6d s_des_temp;
-
-            if (k == 0) {s_des_temp.setZero();}
-
-            else if (k != 0) {
-
-                // Compute s_des[k] for each joint
-                for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {
-                    
-                    // If the trajectory for each joint is finished, next_point = last_point
-                    if (s_des[k-1][joint_n] >= T) {s_des_temp[joint_n] = s_des[k-1][joint_n];}
-
-                    // Assign next point to the trajectory
-                    else {s_des_temp[joint_n] = s_des[k-1][joint_n] + (fabs(s_dot_spline6d[joint_n](s_des[k-1][joint_n])) * sampling_time);}
-
-                    // Check if s_dot != 0 (if s_dot(s_des[k-1]) = 0, s_des[k] = s_des[k-1] and it never grows)
-                    if ((s_des[k-1][joint_n] < T) && (fabs(s_dot_spline6d[joint_n](s_des[k-1][joint_n])) < pow(M_E,-4))) {s_des_temp[joint_n] = s_des[k-1][joint_n] + sampling_time;}
-
-                    // Check if s_des[k] > T and Assign s_des[k] = T (last point)
-                    if (s_des_temp[joint_n] > T) {s_des_temp[joint_n] = T;}
-                
-                }
-
-            }
+        // ---- COMPUTE DESIRED VELOCITY ---- //  q̇ = dq/ds * ṡ
+        std::vector<Vector6d> q_dot_des = compute_desired_velocity (s_des, q_spline6d, s_dot_spline6d);
 
 
-            // Check Data Integrity (check nan, inf)
-            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {
-                
-                // Assign 0 if nan
-                if (std::isnan(s_des_temp[joint_n])) {s_des_temp[joint_n] = 0;}
+        // ---- SCALED TRAJECTORY CREATION ---- //
+        scaled_trajectory = create_scaled_trajectory (input_trajectory, q_dot_des, s_des, q_spline6d);
 
-                // Assign 0 if inf
-                if (std::isinf(s_des_temp[joint_n])) {s_des_temp[joint_n] = 0;}
-
-                // Assign 0 if < pow(e,-10)
-                if (s_des_temp[joint_n] < pow(M_E,-10)) {s_des_temp[joint_n] = 0;}
-                
-            }
-            
-            // s_des[k] = s_des[k-1] + ṡ[s_des[k-1]] * T
-            s_des.push_back(s_des_temp);
-
-            // ---- FINE TRAIETTORIA ---- //
-            if ((s_des[k] >= T).all()) {break;}
-            
-            k++;
-
-        }
-
-        // ---- DEBUG ---- //
-        if (simple_debug) { //TODO: complete_debug
-            std::string package_path = ros::package::getPath("admittance_controller");
-            std::string save_file = package_path + "/debug/s_des_debug.csv";
-            std::ofstream s_des_debug = std::ofstream(save_file);
-            s_des_debug << "s_des\n";
-            for (unsigned int i = 0; i < s_des.size() - 1; i++) {
-                for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {s_des_debug << s_des[i][joint_n] << ",";} s_des_debug << "\n";}
-            s_des_debug.close();
-        }
-
-std::cout << 3 << std::endl;
-
-        std::vector<Vector6d> q_dot_des;
-
-        // Add Stop-Point in the end of s_des
-        s_des.push_back(s_des[s_des.size()-1]);
-
-        // Ricompute New q̇ = dq/ds * ṡ
-        for (unsigned int i = 0; i < s_des.size() - 1; i++) {
-            
-            // dq = q_spline(s[i+1]) - q_spline(s[i])
-            Array6d dq, ds(s_des[i+1] - s_des[i]);
-            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {dq[joint_n] = q_spline6d[joint_n](s_des[i+1][joint_n]) - q_spline6d[joint_n](s_des[i][joint_n]);}
-
-            // geometric velocity (v_geom) = dq/ds = (q[i+1]-q[i])/(s[i+1]-s[i])
-            Array6d q_dot_des_i, v_geom = dq / ds;
-
-            // joint velocity (q̇) = dq/ds * ṡ = v_geom * ṡ
-            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {q_dot_des_i[joint_n] = v_geom[joint_n] * s_dot_spline6d[joint_n](s_des[i][joint_n]);}
-            q_dot_des.push_back(q_dot_des_i);
-
-        }
-
-        //TODO: compute velocity and acceleration limits on the desired velocities
-
-/*         // ---- LIMIT JOINTS DYNAMIC ---- //
-        for (unsigned int i = 1; i < scaled_trajectory.size(); i++) {
-
-            // Compute Sampling Time
-            long double sampling_time = (input_trajectory[i].header.stamp.sec + (input_trajectory[i].header.stamp.nsec * pow(10,-9))) - (input_trajectory[i-1].header.stamp.sec + (input_trajectory[i-1].header.stamp.nsec * pow(10,-9)));
-
-            for (int joint_n = 0; joint_n < 6; joint_n++) {
-                
-                // Limit Joint Velocity
-                if (fabs(scaled_trajectory[i].velocity[joint_n]) > max_vel[joint_n]) {
-
-                    ROS_DEBUG("Reached Maximum Velocity on Joint %d   ->   Velocity: %.3f   Limited at: %.3f", joint_n, scaled_trajectory[i].velocity[joint_n], sign(scaled_trajectory[i].velocity[joint_n]) * max_vel[joint_n]);
-                    scaled_trajectory[i].velocity[joint_n] = sign(scaled_trajectory[i].velocity[joint_n]) * max_vel[joint_n];
-
-                }
-                
-                // Limit Joint Acceleration
-                if (fabs(scaled_trajectory[i].velocity[joint_n] - scaled_trajectory[i-1].velocity[joint_n]) > max_acc[joint_n] * sampling_time) {
-
-                    ROS_DEBUG("Reached Maximum Acceleration on Joint %d   ->   Acceleration: %.3f   Limited at: %.3f", joint_n, (scaled_trajectory[i].velocity[joint_n] - scaled_trajectory[i-1].velocity[joint_n]) / sampling_time, scaled_trajectory[i-1].velocity[joint_n] +  sign(scaled_trajectory[i].velocity[joint_n] - scaled_trajectory[i-1].velocity[joint_n]) * max_acc[joint_n]);
-                    scaled_trajectory[i].velocity[joint_n] = scaled_trajectory[i-1].velocity[joint_n] + sign(scaled_trajectory[i].velocity[joint_n] - scaled_trajectory[i-1].velocity[joint_n]) * max_acc[joint_n] * sampling_time;
-
-                }
-
-            }
-            
-        } */
-
-std::cout << 4 << std::endl;
-        
-        // Create Scaled Trajectory
-        for (unsigned int i = 0; i < q_dot_des.size(); i++) {
-            
-            sensor_msgs::JointState temp;
-
-            // Assign time to each point
-            temp.header = input_trajectory[0].header;
-            temp.header.seq += i;
-            temp.header.stamp = input_trajectory[0].header.stamp + ros::Duration(sampling_time * i);
-
-            // Assign Joint Names
-            temp.name = input_trajectory[0].name;
-
-            // Assign Position and Velocities
-            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {temp.position[joint_n] = q_spline6d[joint_n](s_des[i][joint_n]);}
-            temp.velocity = std::vector<double>(q_dot_des[i].data(), q_dot_des[i].data() + q_dot_des[i].size());
-
-            scaled_trajectory.push_back(temp);
-            
-        }
+        // ---- LIMIT JOINT VELOCITY AND ACCELERATION ---- //
+        scaled_trajectory = limit_joint_dynamics(scaled_trajectory);
 
     }
 
-std::cout << 5 << std::endl;
+    return scaled_trajectory;
+
+}
+
+
+//-------------------------------------------- TRAJECTORY SCALING FUNCTIONS ---------------------------------------------//
+
+
+void admittance_control::check_requested_scaling (admittance_controller::joint_trajectory trajectory, bool no_scaling_requested, bool target_scaling_requested, bool percentage_scaling_requested) {
+
+    double target_vel = trajectory.target_velocity;
+    int percentage_vel = trajectory.velocity_scaling_percentage;
+    
+     // ---- NO-SCALING Requested ---- //
+    if ((percentage_vel == 100 || percentage_vel == 0) && target_vel == 0) {no_scaling_requested = true; ROS_INFO("No-Scaling Requested");}
+
+    // ---- TARGET FIXED-VELOCITY Requested ---- //
+    else if (target_vel != 0) {target_scaling_requested = true; ROS_INFO("Target-Velocity Scaling Requested");}
+
+    // ---- PERCENTAGE-VELOCITY Requested ---- //
+    else if (percentage_vel != 100 && percentage_vel != 0) {percentage_scaling_requested = true; ROS_INFO("Percentage-Velocity Scaling Requested");}
+
+}
+
+std::vector<Array6d> admittance_control::compute_registration_velocity (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<tk::spline> q_spline6d) {
+
+    std::vector<double> s_rec;
+    std::vector<Array6d> s_dot_rec, q_dot_rec, v_geom_rec, dq_rec, ds_rec;
+
+    // Find Registration Velocity ṡ -> q̇ = dq/ds * ṡ, ṡ = ds/dt
+    for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {
+        
+        // Creation of s € [0,spline_length] vector
+        if (i == 0) {s_rec.push_back(q_spline6d[0].get_spline_size() * 0 / (double(input_trajectory.size() - 1) - 1));}
+        s_rec.push_back(q_spline6d[0].get_spline_size() * (i+1) / (double(input_trajectory.size() - 1) - 1));
+
+        // ---- DEBUG ---- //   
+        if (complete_debug) {ROS_INFO_ONCE("Spline Interpolation with s between [0,%f]", q_spline6d[0].get_spline_size());}
+
+        // dq = q[i+1] - q[i]
+        Array6d dq, ds(s_rec[i+1] - s_rec[i]), q_dot_rec_i(input_trajectory[i].velocity.data());
+        for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {dq[joint_n] = q_spline6d[joint_n](s_rec[i+1]) - q_spline6d[joint_n](s_rec[i]);}
+
+        // geometric velocity (v_geom) = dq/ds = (q[i+1]-q[i])/(s[i+1]-s[i])
+        Array6d v_geom = dq / ds;
+
+        // joint velocity (q̇) = dq/ds * ṡ -> ṡ = q̇ * ds/dq = q̇ / v_geom
+        Array6d s_dot_rec_i = q_dot_rec_i / v_geom;
+
+
+        // Check Data Integrity (check nan, inf, v_geom!=0)
+        for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {
+            
+            // Assign 0 if nan
+            if (std::isnan(s_dot_rec_i[joint_n])) {s_dot_rec_i[joint_n] = 0;}
+            if (std::isnan(v_geom[joint_n])) {v_geom[joint_n] = 0;}
+
+            // Assign 0 if inf
+            if (std::isinf(s_dot_rec_i[joint_n])) {s_dot_rec_i[joint_n] = 0;}
+            if (std::isinf(v_geom[joint_n])) {v_geom[joint_n] = 0;}
+
+            // Assign 0 if v_geom = 0
+            if (v_geom[joint_n] == 0) {s_dot_rec_i[joint_n] = 0;}
+
+            // Assign 0 if dq < pow(e,-4)
+            // if (dq[joint_n] < pow(M_E,-4)) {s_dot_rec_i[joint_n] = 0;}
+            
+        }
+
+        s_dot_rec.push_back(s_dot_rec_i);
+        q_dot_rec.push_back(q_dot_rec_i);
+        v_geom_rec.push_back(v_geom);
+        dq_rec.push_back(dq);
+        ds_rec.push_back(ds);
+
+    }
+
+    // ---- DEBUG ---- //
+    if (complete_debug) {
+        std::string package_path = ros::package::getPath("admittance_controller");
+        std::string save_file = package_path + "/debug/s_dot_rec_debug.csv";
+        std::ofstream s_dot_rec_debug = std::ofstream(save_file);
+        s_dot_rec_debug << "s_dot_rec, ,q_dot_rec, ,dq, ,ds, ,srec\n";
+        for (unsigned int i = 0; i < s_dot_rec.size(); i++) {
+            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {s_dot_rec_debug << s_dot_rec[i][joint_n] << ", = ," << q_dot_rec[i][joint_n] << ", / ," << dq_rec[i][joint_n] << ", / ," << ds_rec[i][joint_n] << ",  |  ," << s_rec[i] << "\n";} s_dot_rec_debug << "\n";}
+        s_dot_rec_debug.close();
+    }
+
+    return s_dot_rec;
+
+}
+
+std::vector<Array6d> admittance_control::compute_scaled_velocity (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<Array6d> s_dot_rec, bool target_scaling_requested, bool percentage_scaling_request, double target_velocity, int velocity_percentage) {
+
+    std::vector<Array6d> s_dot_des, gain;
+
+    // ---- TARGET FIXED-VELOCITY Requested ---- //
+    if (target_scaling_requested) {
+
+        for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {
+
+            // Variable Gain -> Fixed Velocity
+            gain.push_back((1 / s_dot_rec[i]) * target_velocity);
+        
+        }
+    }
+
+    // ---- PERCENTAGE-VELOCITY Requested ---- //
+    else if (percentage_scaling_request) {
+        
+        for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {
+            
+            // Fixed Gain
+            Array6d vel_scaling(velocity_percentage);
+            gain.push_back(vel_scaling / 100);
+
+        }
+    }
+
+    // Scaling Registration Velocity * Requested Gain
+    for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {s_dot_des.push_back(s_dot_rec[i] * gain[i]);}
+
+    // ---- DEBUG ---- //
+    if (simple_debug) {
+        std::string package_path = ros::package::getPath("admittance_controller");
+        std::string save_file = package_path + "/debug/s_dot_des_debug.csv";
+        std::ofstream s_dot_des_debug = std::ofstream(save_file);
+        s_dot_des_debug << "s_dot_rec, ,gain, ,s_dot_des\n";
+        for (unsigned int i = 0; i < input_trajectory.size() - 1; i++) {
+            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {s_dot_des_debug << s_dot_rec[i][joint_n] << ",*," << gain[i][joint_n] << ",=," << s_dot_des[i][joint_n] << "\n";} s_dot_des_debug << "\n";}
+        s_dot_des_debug.close();
+    }
+
+    return s_dot_des;
+
+}
+
+std::vector<Array6d> admittance_control::compute_s_des (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<tk::spline> s_dot_spline6d) {
+    
+    std::vector<Array6d> s_des;
+    const double T = (input_trajectory[input_trajectory.size()-1].header.stamp - input_trajectory[0].header.stamp).toSec();
+    const double sampling_time = (input_trajectory[1].header.stamp - input_trajectory[0].header.stamp).toSec();
+    ROS_INFO("Trajectory Time: %lf", T);
+    ROS_INFO("Sampling Time: %lf", sampling_time);
+    
+    unsigned int k = 0;
+
+    while (true) {
+
+        Array6d s_des_temp;
+
+        if (k == 0) {s_des_temp.setZero();}
+
+        else if (k != 0) {
+
+            // Compute s_des[k] for each joint
+            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {
+                
+                // Assign next point to the trajectory -> (s_des[k] = s_des[k-1] + ṡ[s_des[k-1]] * T)
+                s_des_temp[joint_n] = s_des[k-1][joint_n] + (fabs(s_dot_spline6d[joint_n](s_des[k-1][joint_n])) * sampling_time);
+
+                // Check if s_dot != 0 (if s_dot(s_des[k-1]) = 0, s_des[k] = s_des[k-1] and it never grows)
+                if ((s_des[k-1][joint_n] < T) && (fabs(s_dot_spline6d[joint_n](s_des[k-1][joint_n])) < pow(M_E,-4))) {s_des_temp[joint_n] = s_des[k-1][joint_n] + sampling_time;}
+
+                // Check if s_des[k] > T and Assign s_des[k] = T (last point)
+                if (s_des_temp[joint_n] > T) {s_des_temp[joint_n] = T;}
+            
+            }
+
+        }
+
+        // Check Data Integrity (check nan, inf)
+        for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {
+            
+            // Assign 0 if nan
+            if (std::isnan(s_des_temp[joint_n])) {s_des_temp[joint_n] = 0;}
+
+            // Assign 0 if inf
+            if (std::isinf(s_des_temp[joint_n])) {s_des_temp[joint_n] = 0;}
+
+            // Assign 0 if < pow(e,-10)
+            if (s_des_temp[joint_n] < pow(M_E,-10)) {s_des_temp[joint_n] = 0;}
+            
+        }
+        
+        s_des.push_back(s_des_temp);
+
+        // ---- FINE TRAIETTORIA ---- //
+        if ((s_des[k] >= T).all()) {break;}
+        
+        k++;
+
+    }
+
+    // ---- DEBUG ---- //
+    if (simple_debug) {
+        std::string package_path = ros::package::getPath("admittance_controller");
+        std::string save_file = package_path + "/debug/s_des_debug.csv";
+        std::ofstream s_des_debug = std::ofstream(save_file);
+        s_des_debug << "s_des\n";
+        for (unsigned int i = 0; i < s_des.size(); i++) {
+            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {s_des_debug << s_des[i][joint_n] << ",";} s_des_debug << "\n";}
+        s_des_debug.close();
+    }
+
+    return s_des;
+
+}
+
+
+std::vector<Vector6d> admittance_control::compute_desired_velocity (std::vector<Array6d> s_des, std::vector<tk::spline> q_spline6d, std::vector<tk::spline> s_dot_spline6d) {
+
+    std::vector<Vector6d> q_dot_des;
+
+    // Add Stop-Point in the end of s_des
+    s_des.push_back(s_des[s_des.size()-1]);
+
+    // Ricompute New q̇ = dq/ds * ṡ
+    for (unsigned int i = 0; i < s_des.size() - 1; i++) {
+        
+        // dq = q_spline(s[i+1]) - q_spline(s[i])
+        Array6d dq, ds(s_des[i+1] - s_des[i]);
+        for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {dq[joint_n] = q_spline6d[joint_n](s_des[i+1][joint_n]) - q_spline6d[joint_n](s_des[i][joint_n]);}
+
+        // geometric velocity (v_geom) = dq/ds = (q[i+1]-q[i])/(s[i+1]-s[i])
+        Array6d q_dot_des_i, v_geom = dq / ds;
+
+        // joint velocity (q̇) = dq/ds * ṡ = v_geom * ṡ
+        for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {q_dot_des_i[joint_n] = v_geom[joint_n] * s_dot_spline6d[joint_n](s_des[i][joint_n]);}
+
+        // Check Data Integrity (check nan, inf)
+        for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {
+            
+            // Assign 0 if nan
+            if (std::isnan(q_dot_des_i[joint_n])) {q_dot_des_i[joint_n] = 0;}
+
+            // Assign 0 if inf
+            if (std::isinf(q_dot_des_i[joint_n])) {q_dot_des_i[joint_n] = 0;}
+
+            // Assign 0 if ds = 0
+            if (ds[joint_n] == 0) {q_dot_des_i[joint_n] = 0;}
+            
+        }
+
+        q_dot_des.push_back(q_dot_des_i);
+
+    }
+
+    // ---- DEBUG ---- //
+    if (complete_debug) {
+        std::string package_path = ros::package::getPath("admittance_controller");
+        std::string save_file = package_path + "/debug/q_dot_des_debug.csv";
+        std::ofstream q_dot_des_debug = std::ofstream(save_file);
+        q_dot_des_debug << "q_dot_des\n";
+        for (unsigned int i = 0; i < q_dot_des.size(); i++) {
+            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {q_dot_des_debug << q_dot_des[i][joint_n] << ",";} q_dot_des_debug << "\n";}
+        q_dot_des_debug.close();
+    }
+
+    return q_dot_des;
+
+}
+
+std::vector<sensor_msgs::JointState> admittance_control::create_scaled_trajectory (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<Vector6d> q_dot_des, std::vector<Array6d> s_des, std::vector<tk::spline> q_spline6d) {
+
+    std::vector<sensor_msgs::JointState> scaled_trajectory;
+
+    ros::Time start_time = ros::Time::now();
+    const double sampling_time = (input_trajectory[1].header.stamp - input_trajectory[0].header.stamp).toSec();
+
+    // Create Scaled Trajectory
+    for (unsigned int i = 0; i < q_dot_des.size(); i++) {
+        
+        // ---- DEBUG ---- //
+        if (complete_debug) ROS_INFO_ONCE("q_dot_des size: %d", int(q_dot_des.size()));
+
+        sensor_msgs::JointState temp;
+
+        // Assign time to each point
+        temp.header = input_trajectory[0].header;
+        temp.header.seq = input_trajectory[0].header.seq + i;
+        temp.header.stamp = start_time + ros::Duration(sampling_time * i);
+
+        // Assign Joint Names
+        temp.name = input_trajectory[0].name;
+
+        // Assign Position and Velocities
+        temp.position.resize(6);
+        for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {temp.position[joint_n] = q_spline6d[joint_n](s_des[i][joint_n]);}
+        temp.velocity = std::vector<double>(q_dot_des[i].data(), q_dot_des[i].data() + q_dot_des[i].size());
+
+        scaled_trajectory.push_back(temp);
+        
+    }
+
+    // ---- DEBUG ---- //
+    if (simple_debug) {trajectory_debug_csv(scaled_trajectory,"input_trajectory");}
 
     return scaled_trajectory;
 
@@ -804,19 +921,16 @@ std::vector<tk::spline> admittance_control::spline_interpolation (std::vector<Ve
 
     // ---- DEBUG ---- //
     if (complete_debug) {
-
-        for (unsigned int spline_number = 0; spline_number < 6; spline_number++) {
-        
-            tk::spline spline1d = spline6d[spline_number];
-            std::string package_path = ros::package::getPath("admittance_controller");
-            std::string save_file = package_path + "/debug/" + output_file + "_spline1d_joint" + std::to_string(spline_number+1) + "_debug.csv";
-            std::ofstream spline1d_debug = std::ofstream(save_file);
-
-            spline1d_debug << "Point,s\n";
-
-            for (unsigned int i = 0; i < data_vector.size(); i++) {spline1d_debug << spline1d(s[i]) << "," << s[i] << "\n";}
-        
+        std::string package_path = ros::package::getPath("admittance_controller");
+        std::string save_file = package_path + "/debug/" + output_file + "_spline6d_debug.csv";
+        std::ofstream spline6d_debug = std::ofstream(save_file);
+        spline6d_debug << "s, ,Joint1,Joint2,Joint3,Joint4,Joint5,Joint6\n\n";
+        for (unsigned int i = 0; i < data_vector.size(); i++) { 
+            spline6d_debug << s[i] << ", ,";
+            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {spline6d_debug << spline6d[joint_n](s[i]) << ",";}
+            spline6d_debug << "\n";
         }
+        spline6d_debug.close();
     }
     
     return spline6d;

@@ -135,14 +135,26 @@ class admittance_control {
 
         // ---- LIMIT DYNAMIC FUNCTIONS ---- //
         Vector6d limit_joint_dynamics (Vector6d joint_velocity);
+        std::vector<sensor_msgs::JointState> limit_joint_dynamics (std::vector<sensor_msgs::JointState> trajectory);
         Vector6d compute_inertia_reduction (Vector6d velocity, Vector6d wrench);
 
         // ---- TRAJECTORY FUNCTIONS ---- //
         void trajectory_execution (std::vector<sensor_msgs::JointState> trajectory);
+        void trajectory_debug_csv (std::vector<sensor_msgs::JointState> trajectory, std::string trajectory_name);
+        sensor_msgs::JointState add_stop_point (std::vector<sensor_msgs::JointState> *trajectory);
+
+        // ---- TRAJECTORY SCALING ---- //
         std::vector<sensor_msgs::JointState> trajectory_scaling (admittance_controller::joint_trajectory trajectory);
+        void check_requested_scaling (admittance_controller::joint_trajectory trajectory, bool no_scaling_requested, bool target_scaling_requested, bool percentage_scaling_requested);
+        std::vector<Array6d> compute_registration_velocity (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<tk::spline> q_spline6d);
+        std::vector<Array6d> compute_scaled_velocity (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<Array6d> s_dot_rec, bool target_scaling_requested, bool percentage_scaling_request, double target_velocity, int velocity_percentage);
+        std::vector<Array6d> compute_s_des (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<tk::spline> s_dot_spline6d);
+        std::vector<Vector6d> compute_desired_velocity (std::vector<Array6d> s_des, std::vector<tk::spline> q_spline6d, std::vector<tk::spline> s_dot_spline6d);
+        std::vector<sensor_msgs::JointState> create_scaled_trajectory (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<Vector6d> q_dot_des, std::vector<Array6d> s_des, std::vector<tk::spline> q_spline6d);
+
+        // ---- SPLINE INTERPOLATION ---- //
         std::vector<tk::spline> spline_interpolation (std::vector<Vector6d> data_vector, double spline_lenght, std::string output_file);
         std::vector<tk::spline> spline_interpolation (std::vector<Array6d> data_vector, double spline_lenght, std::string output_file);
-        sensor_msgs::JointState add_stop_point(std::vector<sensor_msgs::JointState> *trajectory);
         
         // ---- CONTROL FUNCTIONS ---- //
         void send_velocity_to_robot (Vector6d velocity);
