@@ -145,7 +145,7 @@ class admittance_control {
 
         // ---- TRAJECTORY SCALING ---- //
         std::vector<sensor_msgs::JointState> trajectory_scaling (admittance_controller::joint_trajectory trajectory);
-        void check_requested_scaling (admittance_controller::joint_trajectory trajectory, bool no_scaling_requested, bool target_scaling_requested, bool percentage_scaling_requested);
+        void check_requested_scaling (admittance_controller::joint_trajectory trajectory, bool *no_scaling_requested, bool *target_scaling_requested, bool *percentage_scaling_requested);
         std::vector<Array6d> compute_registration_velocity (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<tk::spline> q_spline6d);
         std::vector<Array6d> compute_scaled_velocity (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<Array6d> s_dot_rec, bool target_scaling_requested, bool percentage_scaling_request, double target_velocity, int velocity_percentage);
         std::vector<Array6d> compute_s_des (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<tk::spline> s_dot_spline6d);
@@ -159,7 +159,7 @@ class admittance_control {
         // ---- CONTROL FUNCTIONS ---- //
         void send_velocity_to_robot (Vector6d velocity);
         void send_position_to_robot (Vector6d position);
-        void wait_for_position_reached (Vector6d desired_position);
+        void wait_for_position_reached (Vector6d desired_position, double maximum_time);
         void freedrive_mode (bool activation);
 
         // ---- USEFUL FUNCTIONS ---- //

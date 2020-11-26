@@ -1,4 +1,4 @@
-frame_id,seq,sec,nsec, ,pos_joint1,pos_joint2,pos_joint2,pos_joint4,pos_joint5,pos_joint6, ,vel_joint1,vel_joint2,vel_joint3,vel_joint4,vel_joint5,vel_joint6
+frame_id,seq,sec,nsec,     ,pos_joint1,pos_joint2,pos_joint2,pos_joint4,pos_joint5,pos_joint6,     ,vel_joint1,vel_joint2,vel_joint3,vel_joint4,vel_joint5,vel_joint6
 
 ,0,1604079203,877246056, ,0.84271,-1.84322,-1.82478,0.374059,1.49383,-0.0110315, ,-0,-0,-0,0,0,0,
 ,0,1604079203,879238857, ,0.842662,-1.84322,-1.82477,0.374047,1.49376,-0.0110672, ,-0,-0,-0,0,0,0,

@@ -75,8 +75,8 @@ admittance_control::admittance_control(
         ROS_INFO_ONCE("Maximum Acceleration: %.2f %.2f %.2f %.2f %.2f %.2f \n", max_acc[0], max_acc[1], max_acc[2], max_acc[3], max_acc[4], max_acc[5]);
         ROS_INFO_ONCE("Force Dead Zone:   %.2f", force_dead_zone);
         ROS_INFO_ONCE("Troque Dead Zone:  %.2f", torque_dead_zone);
-        ROS_INFO_ONCE("Admittance Weight: %.2f \n", admittance_weight);
-        ROS_INFO_STREAM_ONCE("Inertia Reduction: " << inertia_reduction << std::endl);
+        ROS_INFO_ONCE("Admittance Weight: %.2f", admittance_weight);
+        ROS_INFO_ONCE("Inertia Reduction: %s", inertia_reduction ? "true" : "false");
         ROS_INFO_STREAM_ONCE("Cycle Time: " << loop_rate.expectedCycleTime().toSec()*1000 << " ms" << std::endl);
     }
     
@@ -87,13 +87,14 @@ admittance_control::admittance_control(
         std::string save_file = package_path + "/debug/ft_sensor.csv";
         ft_sensor_debug = std::ofstream(save_file);
     }
-
-    // ---- WAIT FOR INITIALIZATION ---- //
-    //TODO: wait_for_callbacks_initialization();
-    std::cout << std::endl;
-
+    
     // ---- ZERO FT SENSOR ---- //
     while (use_ur_real_robot && !zero_ft_sensor_client.call(zero_ft_sensor_srv)) {ROS_WARN_THROTTLE(2,"Wait for Service: \"/ur_hardware_interface/zero_ftsensor\"");}
+    ROS_INFO("Succesful Request \"zero_ftsensor\"\n");
+    
+    // ---- WAIT FOR INITIALIZATION ---- //
+    wait_for_callbacks_initialization();
+    std::cout << std::endl;
 
 }
 
@@ -127,7 +128,7 @@ void admittance_control::force_sensor_Callback (const geometry_msgs::WrenchStamp
     for (int i = 3; i < 6; i++) {if(fabs(external_wrench[i]) < fabs(torque_dead_zone)) {external_wrench[i] = 0.0;}}
     
     // ---- DEBUG ---- //
-    if (simple_debug) ROS_INFO_THROTTLE_NAMED(2, "FTSensor", "Sensor Force/Torque Clamped  ->  Fx: %.2f  Fy: %.2f  Fz: %.2f  |  Tx: %.2f  Ty: %.2f  Tz: %.2f", external_wrench[0], external_wrench[1], external_wrench[2], external_wrench[3], external_wrench[4], external_wrench[5]);
+    if (complete_debug) ROS_INFO_THROTTLE_NAMED(2, "FTSensor", "Sensor Force/Torque Clamped  ->  Fx: %.2f  Fy: %.2f  Fz: %.2f  |  Tx: %.2f  Ty: %.2f  Tz: %.2f", external_wrench[0], external_wrench[1], external_wrench[2], external_wrench[3], external_wrench[4], external_wrench[5]);
     
     // LowPass Filter
     external_wrench = low_pass_filter(external_wrench);
@@ -456,6 +457,9 @@ void admittance_control::trajectory_execution (std::vector<sensor_msgs::JointSta
 
     for (unsigned i = 0; i < trajectory.size() - 1; i++) {
 
+        // Print Trajectory Execution Percentage
+        ROS_INFO_STREAM_THROTTLE(5, "Trajectory Execution Status: " << std::floor(trajectory[i].header.seq * 100 / trajectory[trajectory.size()-1].header.seq) << "%");
+
         // Compute Trajectory Rate (Point [i+1] - Point [i])
         double trajectory_rate = (trajectory[i+1].header.stamp - trajectory[i].header.stamp).toSec();
 
@@ -467,8 +471,7 @@ void admittance_control::trajectory_execution (std::vector<sensor_msgs::JointSta
 
     }
 
-    // End-Trajectory Stop-Point 
-    send_velocity_to_robot(Vector6d(stop_point.velocity.data()));
+    ROS_WARN("Trajectory Completed\n");
 
 }
 
@@ -529,7 +532,7 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
     int velocity_percentage = trajectory.velocity_scaling_percentage;
     
     //TODO: ---- DEBUG ---- // 
-    velocity_percentage = 50;
+    trajectory.velocity_scaling_percentage = 50;
 
     // ---- Check Requested Scaling ---- //
     bool no_scaling_requested = false, target_scaling_requested = false, percentage_scaling_requested = false;
@@ -562,7 +565,7 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
 
         // ---- FIND REGISTRATION VELOCITY ---- //  ṡ -> q̇ = dq/ds * ṡ, ṡ = ds/dt
         std::vector<Array6d> s_dot_rec = compute_registration_velocity (input_trajectory, q_spline6d);
-     
+
         // ---- COMPUTE SCALED VELOCITY ---- //  ṡ_rec * requested_gain
         std::vector<Array6d> s_dot_des = compute_scaled_velocity (input_trajectory, s_dot_rec, target_scaling_requested, percentage_scaling_requested, target_velocity, velocity_percentage);
 
@@ -593,19 +596,19 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
 //-------------------------------------------- TRAJECTORY SCALING FUNCTIONS ---------------------------------------------//
 
 
-void admittance_control::check_requested_scaling (admittance_controller::joint_trajectory trajectory, bool no_scaling_requested, bool target_scaling_requested, bool percentage_scaling_requested) {
+void admittance_control::check_requested_scaling (admittance_controller::joint_trajectory trajectory, bool *no_scaling_requested, bool *target_scaling_requested, bool *percentage_scaling_requested) {
 
     double target_vel = trajectory.target_velocity;
     int percentage_vel = trajectory.velocity_scaling_percentage;
     
      // ---- NO-SCALING Requested ---- //
-    if ((percentage_vel == 100 || percentage_vel == 0) && target_vel == 0) {no_scaling_requested = true; ROS_INFO("No-Scaling Requested");}
+    if ((percentage_vel == 100 || percentage_vel == 0) && target_vel == 0) {*no_scaling_requested = true; ROS_INFO("No-Scaling Requested");}
 
     // ---- TARGET FIXED-VELOCITY Requested ---- //
-    else if (target_vel != 0) {target_scaling_requested = true; ROS_INFO("Target-Velocity Scaling Requested");}
+    else if (target_vel != 0) {*target_scaling_requested = true; ROS_INFO("Target-Velocity Scaling Requested");}
 
     // ---- PERCENTAGE-VELOCITY Requested ---- //
-    else if (percentage_vel != 100 && percentage_vel != 0) {percentage_scaling_requested = true; ROS_INFO("Percentage-Velocity Scaling Requested");}
+    else if (percentage_vel != 100 && percentage_vel != 0) {*percentage_scaling_requested = true; ROS_INFO("Percentage-Velocity Scaling Requested");}
 
 }
 
@@ -826,6 +829,9 @@ std::vector<Vector6d> admittance_control::compute_desired_velocity (std::vector<
 
             // Assign 0 if ds = 0
             if (ds[joint_n] == 0) {q_dot_des_i[joint_n] = 0;}
+
+            // Assign 0 if < pow(e,-10)
+            if (q_dot_des_i[joint_n] < pow(M_E,-10)) {q_dot_des_i[joint_n] = 0;}
             
         }
 
@@ -1010,7 +1016,7 @@ void admittance_control::send_position_to_robot (Vector6d position) {
     ROS_INFO("GoTo Initial Position in %.2fs: %.2f %.2f %.2f %.2f %.2f %.2f", execution_time, position[0], position[1], position[2], position[3], position[4], position[5]);
 
     // Wait for Position Reached
-    wait_for_position_reached(position);
+    wait_for_position_reached(position, execution_time);
 
     // Switch Controller (Position to Velocity)
     switch_controller_srv.request.stop_controllers[0]  = "scaled_pos_joint_traj_controller";
@@ -1031,14 +1037,16 @@ void admittance_control::send_position_to_robot (Vector6d position) {
 
 }
 
-void admittance_control::wait_for_position_reached (Vector6d desired_position) {
+void admittance_control::wait_for_position_reached (Vector6d desired_position, double maximum_time) {
 
     ros::spinOnce();
 
     Vector6d current_position(joint_state.position.data());
 
+    ros::Time start_time = ros::Time::now();
+
     // Wait until desired_position and current_position are equal with a little tolerance
-    while ((Eigen::abs(desired_position.array() - current_position.array()) > 0.0001).all()) {
+    while ((Eigen::abs(desired_position.array() - current_position.array()) > 0.0001).all() && ((ros::Time::now() - start_time).toSec() < maximum_time)) {
 
         ros::spinOnce();
         current_position = Vector6d(joint_state.position.data());
