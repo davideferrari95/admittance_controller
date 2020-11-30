@@ -4,6 +4,7 @@
 #include <signal.h>
 #include <fstream>
 #include <numeric>
+#include <math.h>
 
 #include "spline_interpolation/spline.h" /* https://kluge.in-chemnitz.de/opensource/spline/ */
 
@@ -39,6 +40,8 @@ typedef Matrix<double, 6, 1> Vector6d;
 typedef Matrix<double, 6, 6> Matrix6d;
 typedef Array<double, 6, 1> Array6d;
 
+#define GET_VARIABLE_NAME(Variable) (#Variable)
+
 class admittance_control {
 
     public:
@@ -54,6 +57,9 @@ class admittance_control {
         ~admittance_control();
 
         void spinner (void);
+
+        bool simple_debug;
+        bool complete_debug;
 
     private:
 
@@ -129,17 +135,31 @@ class admittance_control {
 
         // ---- LIMIT DYNAMIC FUNCTIONS ---- //
         Vector6d limit_joint_dynamics (Vector6d joint_velocity);
+        std::vector<sensor_msgs::JointState> limit_joint_dynamics (std::vector<sensor_msgs::JointState> trajectory);
         Vector6d compute_inertia_reduction (Vector6d velocity, Vector6d wrench);
 
         // ---- TRAJECTORY FUNCTIONS ---- //
         void trajectory_execution (std::vector<sensor_msgs::JointState> trajectory);
+        void trajectory_debug_csv (std::vector<sensor_msgs::JointState> trajectory, std::string trajectory_name);
+        sensor_msgs::JointState add_stop_point (std::vector<sensor_msgs::JointState> *trajectory);
+
+        // ---- TRAJECTORY SCALING ---- //
         std::vector<sensor_msgs::JointState> trajectory_scaling (admittance_controller::joint_trajectory trajectory);
-        std::vector<tk::spline> spline_interpolation (std::vector<Vector6d> data_vector);
+        void check_requested_scaling (admittance_controller::joint_trajectory trajectory, bool *no_scaling_requested, bool *target_scaling_requested, bool *percentage_scaling_requested);
+        std::vector<Array6d> compute_registration_velocity (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<tk::spline> q_spline6d);
+        std::vector<Array6d> compute_scaled_velocity (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<Array6d> s_dot_rec, bool target_scaling_requested, bool percentage_scaling_request, int target_velocity, int velocity_percentage);
+        std::vector<Array6d> compute_s_des (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<tk::spline> s_dot_spline6d);
+        std::vector<Vector6d> compute_desired_velocity (std::vector<Array6d> s_des, std::vector<tk::spline> q_spline6d, std::vector<tk::spline> s_dot_spline6d);
+        std::vector<sensor_msgs::JointState> create_scaled_trajectory (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<Vector6d> q_dot_des, std::vector<Array6d> s_des, std::vector<tk::spline> q_spline6d);
+
+        // ---- SPLINE INTERPOLATION ---- //
+        std::vector<tk::spline> spline_interpolation (std::vector<Vector6d> data_vector, double spline_lenght, std::string output_file);
+        std::vector<tk::spline> spline_interpolation (std::vector<Array6d> data_vector, double spline_lenght, std::string output_file);
         
         // ---- CONTROL FUNCTIONS ---- //
         void send_velocity_to_robot (Vector6d velocity);
         void send_position_to_robot (Vector6d position);
-        void wait_for_position_reached (Vector6d desired_position);
+        void wait_for_position_reached (Vector6d desired_position, double maximum_time);
         void freedrive_mode (bool activation);
 
         // ---- USEFUL FUNCTIONS ---- //

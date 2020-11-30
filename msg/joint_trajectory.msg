@@ -1,3 +1,2 @@
 sensor_msgs/JointState[] trajectory
-float64 target_velocity
 int64 velocity_scaling_percentage

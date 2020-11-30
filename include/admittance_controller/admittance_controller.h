@@ -145,16 +145,17 @@ class admittance_control {
 
         // ---- TRAJECTORY SCALING ---- //
         std::vector<sensor_msgs::JointState> trajectory_scaling (admittance_controller::joint_trajectory trajectory);
-        void check_requested_scaling (admittance_controller::joint_trajectory trajectory, bool *no_scaling_requested, bool *target_scaling_requested, bool *percentage_scaling_requested);
-        std::vector<Array6d> compute_registration_velocity (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<tk::spline> q_spline6d);
-        std::vector<Array6d> compute_scaled_velocity (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<Array6d> s_dot_rec, bool target_scaling_requested, bool percentage_scaling_request, int target_velocity, int velocity_percentage);
-        std::vector<Array6d> compute_s_des (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<tk::spline> s_dot_spline6d);
-        std::vector<Vector6d> compute_desired_velocity (std::vector<Array6d> s_des, std::vector<tk::spline> q_spline6d, std::vector<tk::spline> s_dot_spline6d);
-        std::vector<sensor_msgs::JointState> create_scaled_trajectory (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<Vector6d> q_dot_des, std::vector<Array6d> s_des, std::vector<tk::spline> q_spline6d);
+        void check_requested_scaling (admittance_controller::joint_trajectory trajectory, bool *no_scaling_requested, bool *velocity_scaling_requested);
+        double compute_scaled_velocity (double s_dot_rec, int velocity_scaling_percentage);
+        std::vector<double> compute_s_des (double s_dot_des, double trajectory_time, double sampling_time);
+        std::vector<Vector6d> compute_desired_positions (std::vector<double> s_des, std::vector<tk::spline> q_spline6d);
+        std::vector<Vector6d> compute_desired_velocities (std::vector<Vector6d> q_des, double sampling_time);
+        std::vector<sensor_msgs::JointState> create_scaled_trajectory (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<Vector6d> q_des, std::vector<Vector6d> q_dot_des);
 
         // ---- SPLINE INTERPOLATION ---- //
         std::vector<tk::spline> spline_interpolation (std::vector<Vector6d> data_vector, double spline_lenght, std::string output_file);
         std::vector<tk::spline> spline_interpolation (std::vector<Array6d> data_vector, double spline_lenght, std::string output_file);
+        Vector6d get_spline_value (std::vector<tk::spline> spline6d, double s);
         
         // ---- CONTROL FUNCTIONS ---- //
         void send_velocity_to_robot (Vector6d velocity);
