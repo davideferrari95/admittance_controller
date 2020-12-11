@@ -55,6 +55,7 @@ admittance_control::admittance_control(
     joint_state_callback = false;
     freedrive_mode_request = false;
     admittance_control_request = true;
+    trajectory_execution_request = false;
     simple_debug = true;
     complete_debug = false;
 
@@ -87,14 +88,14 @@ admittance_control::admittance_control(
         std::string save_file = package_path + "/debug/ft_sensor.csv";
         ft_sensor_debug = std::ofstream(save_file);
     }
-    
-    // ---- ZERO FT SENSOR ---- //
-    while (use_ur_real_robot && !zero_ft_sensor_client.call(zero_ft_sensor_srv)) {ROS_WARN_THROTTLE(2,"Wait for Service: \"/ur_hardware_interface/zero_ftsensor\"");}
-    if (zero_ft_sensor_client.call(zero_ft_sensor_srv)) ROS_INFO("Succesful Request \"zero_ftsensor\"\n");
-    
+
     // ---- WAIT FOR INITIALIZATION ---- //
     wait_for_callbacks_initialization();
-    std::cout << std::endl;
+
+    // ---- ZERO FT SENSOR ---- //
+    // while (use_ur_real_robot && !zero_ft_sensor_client.call(zero_ft_sensor_srv)) {ROS_WARN_THROTTLE(2,"Wait for Service: \"/ur_hardware_interface/zero_ftsensor\"");}
+    // if (zero_ft_sensor_client.call(zero_ft_sensor_srv)) ROS_INFO("Succesful Request \"zero_ftsensor\"\n");
+    ftsensor_start_offset = compute_ftsensor_starting_offset();
 
 }
 
@@ -165,15 +166,13 @@ void admittance_control::trajectory_execution_Callback (const admittance_control
 
     ROS_WARN("Trajectory Execution Callback");
 
+    // Start Trajectory Execution
+    trajectory_execution_request = true;
+    desired_trajectory = *msg;
+
+    // Stop Freedrive and Admittance
     freedrive_mode_request = false;
     admittance_control_request = false;
-    
-    std::vector<sensor_msgs::JointState> desired_trajectory = trajectory_scaling(*msg);
-
-    trajectory_execution(desired_trajectory);
-
-    admittance_control_request = true;
-    ROS_WARN("Restart Admittance Control\n");
 
 }
 
@@ -332,6 +331,9 @@ void admittance_control::compute_admittance (void) {
         
     }
 
+    // Subtract FTSensor Starting Offset
+    for (unsigned i = 0; i < external_wrench.size(); i++) {external_wrench[i] += - ftsensor_start_offset[i];}
+
     // Compute Acceleration with Admittance
     Vector6d arm_desired_accelaration_cartesian = mass_matrix.inverse() * ( - damping_matrix * x_dot + admittance_weight * 
                                                   (get_ee_rotation_matrix(joint_position, joint_velocity) * external_wrench));
@@ -397,43 +399,6 @@ Vector6d admittance_control::limit_joint_dynamics (Vector6d joint_velocity) {
     return joint_velocity;
 
 }
-   
-std::vector<sensor_msgs::JointState> admittance_control::limit_joint_dynamics (std::vector<sensor_msgs::JointState> trajectory) {
-
-    // ---- LIMIT JOINTS DYNAMIC ---- //
-    for (unsigned int i = 1; i < trajectory.size(); i++) {
-
-        // Compute Sampling Time
-        double sampling_time = (trajectory[i].header.stamp.toSec() - trajectory[i-1].header.stamp.toSec());
-
-        for (int joint_n = 0; joint_n < 6; joint_n++) {
-            
-            // Limit Joint Velocity
-            if (fabs(trajectory[i].velocity[joint_n]) > max_vel[joint_n]) {
-
-                ROS_DEBUG("Reached Maximum Velocity on Joint %d   ->   Velocity: %.3f   Limited at: %.3f", joint_n, trajectory[i].velocity[joint_n], sign(trajectory[i].velocity[joint_n]) * max_vel[joint_n]);
-                trajectory[i].velocity[joint_n] = sign(trajectory[i].velocity[joint_n]) * max_vel[joint_n];
-
-            }
-            
-            // Limit Joint Acceleration
-            if (fabs(trajectory[i].velocity[joint_n] - trajectory[i-1].velocity[joint_n]) > max_acc[joint_n] * sampling_time) {
-
-                ROS_DEBUG("Reached Maximum Acceleration on Joint %d   ->   Acceleration: %.3f   Limited at: %.3f", joint_n, (trajectory[i].velocity[joint_n] - trajectory[i-1].velocity[joint_n]) / sampling_time, trajectory[i-1].velocity[joint_n] +  sign(trajectory[i].velocity[joint_n] - trajectory[i-1].velocity[joint_n]) * max_acc[joint_n]);
-                trajectory[i].velocity[joint_n] = trajectory[i-1].velocity[joint_n] + sign(trajectory[i].velocity[joint_n] - trajectory[i-1].velocity[joint_n]) * max_acc[joint_n] * sampling_time;
-
-            }
-
-        }
-        
-    }
-
-    // ---- DEBUG ---- //
-    if (simple_debug) {trajectory_debug_csv(trajectory,"scaled_limit_dynamics_trajectory");}
-
-    return trajectory;
-
-}
 
 Vector6d admittance_control::compute_inertia_reduction (Vector6d velocity, Vector6d wrench) {
 
@@ -455,7 +420,13 @@ Vector6d admittance_control::compute_inertia_reduction (Vector6d velocity, Vecto
 //------------------------------------------------ TRAJECTORY FUNCTIONS -------------------------------------------------//
 
 
-void admittance_control::trajectory_execution (std::vector<sensor_msgs::JointState> trajectory) {
+void admittance_control::trajectory_execution (admittance_controller::joint_trajectory desired_trajectory) {
+
+    // Stop Robot if Moving
+    stop_robot();
+    
+    // Compute Trajectory Scaling
+    std::vector<sensor_msgs::JointState> trajectory = trajectory_scaling(desired_trajectory);
 
     // Move Robot to Poin 0 (Position Controller)
     Vector6d starting_position(trajectory[0].position.data());
@@ -485,6 +456,21 @@ void admittance_control::trajectory_execution (std::vector<sensor_msgs::JointSta
     }
 
     ROS_WARN("Trajectory Completed\n");
+
+    // Re-Start Admittance Control
+    ftsensor_start_offset = compute_ftsensor_starting_offset();
+    admittance_control_request = true;
+
+    ROS_WARN("Restart Admittance Control\n");
+
+}
+
+void admittance_control::stop_robot (void) {
+    
+    Vector6d stop;
+    stop.setZero();
+
+    send_velocity_to_robot(stop);
 
 }
 
@@ -539,9 +525,6 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
     
     // ---- DEBUG ---- //
     if (simple_debug) {trajectory_debug_csv(input_trajectory,"input_trajectory");}
-    
-    // Percentage of Scaling [%]
-    int velocity_scaling_percentage = trajectory.velocity_scaling_percentage;
 
     // ---- Check Requested Scaling ---- //
     bool no_scaling_requested = false, velocity_scaling_requested = false;
@@ -571,23 +554,29 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
         ROS_INFO("Trajectory Time: %lf", trajectory_time);
         ROS_INFO("Sampling Time: %lf", sampling_time);
 
+        //TODO: Obtain Control Time (20ms ≈ 10 * sampling_time)
+        const double sampling_control_time = 20;
+        ROS_INFO("Sampling Execution Time: %lf", sampling_control_time);
+
         // Spline Interpolation -> Q(s) = spline6d[joint_number](s) con s € [0,T]
         std::vector<tk::spline> q_spline6d = spline_interpolation (input_positions, trajectory_time, GET_VARIABLE_NAME(input_positions));
 
-
+ 
         // ---- COMPUTE SCALED VELOCITY ---- //
 
         // Registration Velocity    ->    If t ∈ [0,T] and s ∈ [0,T] -> ṡ_rec = 1
         double s_dot_rec = 1;
 
         // Scaled Velocity          ->    ṡ_des = gain * ṡ_rec
-        double s_dot_des = compute_scaled_velocity (s_dot_rec, velocity_scaling_percentage);
+        double s_dot_des = compute_scaled_velocity (trajectory, s_dot_rec);
 
 
         // ---- COMPUTE SCALED EVOLUTION ---- //
 
+        ROS_WARN("Computing Scaled Trajectory...");
+
         // s_des[k] = s_des[k-1] + ṡ_des * τ, τ = sampling_time
-        std::vector<double> s_des = compute_s_des (s_dot_des, trajectory_time, sampling_time);
+        std::vector<double> s_des = compute_s_des (s_dot_des, trajectory_time, sampling_control_time);
 
         // q_des[k] = q_des[s[k]]
         std::vector<Vector6d> q_des = compute_desired_positions (s_des, q_spline6d);
@@ -596,19 +585,13 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
         // ---- COMPUTE CONTROL VELOCITY ---- //
 
         // q̇_des[k] = (q_des[k+1] - q_des[k]) / τ
-        std::vector<Vector6d> q_dot_des = compute_desired_velocities (q_des, sampling_time);
+        std::vector<Vector6d> q_dot_des = compute_desired_velocities (q_des, sampling_control_time);
 
 
         // ---- SCALED TRAJECTORY CREATION ---- //
 
         // Create trajectory with computed positions and velocities
-        scaled_trajectory = create_scaled_trajectory (input_trajectory, q_des, q_dot_des);
-
-
-        // ---- LIMIT JOINT VELOCITY AND ACCELERATION ---- //
-
-        // Check if the trajectory is feasable in respect with manipulator dynamics
-        //TODO: scaled_trajectory = limit_joint_dynamics(scaled_trajectory);
+        scaled_trajectory = create_scaled_trajectory (input_trajectory, q_des, q_dot_des, sampling_control_time);
 
     }
 
@@ -622,23 +605,31 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
 
 void admittance_control::check_requested_scaling (admittance_controller::joint_trajectory trajectory, bool *no_scaling_requested, bool *velocity_scaling_requested) {
 
+    // Percentage of Scaling [%]
     int percentage_vel = trajectory.velocity_scaling_percentage;
-    
-     // ---- NO-SCALING Requested ---- //
+
+    // ---- NO-SCALING Requested ---- //
     if (percentage_vel == 100 || percentage_vel == 0) {*no_scaling_requested = true; ROS_INFO("No-Scaling Requested");}
 
     // ---- PERCENTAGE-VELOCITY Requested ---- //
-    else if (percentage_vel != 100 && percentage_vel != 0) {*velocity_scaling_requested = true; ROS_INFO("Velocity-Scaling Requested: %d%", percentage_vel);}
+    else if (percentage_vel != 100 && percentage_vel != 0) {*velocity_scaling_requested = true; ROS_INFO_STREAM("Velocity-Scaling Requested: " << percentage_vel << "%");}
 
 }
 
-double admittance_control::compute_scaled_velocity (double s_dot_rec, int velocity_scaling_percentage) {
+double admittance_control::compute_scaled_velocity (admittance_controller::joint_trajectory trajectory, double s_dot_rec) {
+
+    // Percentage of Scaling [%]
+    double percentage_vel = trajectory.velocity_scaling_percentage;
+    if (complete_debug) ROS_INFO_STREAM("Velocity-Scaling Requested: " << percentage_vel << "%");
 
     // Compute Desired Gain
-    double gain = velocity_scaling_percentage / 100;
+    double gain = percentage_vel / 100;
 
     // Scaling Registration Velocity * Requested Gain
     double s_dot_des = s_dot_rec * gain;
+
+    // ---- DEBUG ---- //
+    if (complete_debug) {ROS_INFO("s_dot_des = s_dot_rec * gain  ->  %.6f = %.6f * %.2f", s_dot_des, s_dot_rec, gain);}
 
     return s_dot_des;
 
@@ -648,32 +639,22 @@ std::vector<double> admittance_control::compute_s_des (double s_dot_des, double 
 
     std::vector<double> s_des;
 
-    unsigned int k = 0;
+    // Zero Starting Point
+    s_des.push_back(0);
 
-    while (true) {
+    unsigned int k = 1;
+    
+    while (ros::ok() && s_des[k-1] <= trajectory_time) {
 
-        double s_des_temp;
+        // Compute s[k] = s[k-1] + ṡ * τ, τ = sampling_time
+        s_des.push_back(s_des[k-1] + s_dot_des * sampling_time);
 
-        if (k == 0) {s_des_temp = 0;}
-
-        else if (k != 0) {
-
-            // Compute s[k] = s[k-1] + ṡ * τ, τ = sampling_time
-            s_des_temp = s_des[k-1] + s_dot_des * sampling_time;
-
-            // Check if s_des[k] > T and Assign s_des[k] = T (last point)
-            if (s_des_temp > trajectory_time) {s_des_temp = trajectory_time;}
-
-        }
-        
-        s_des.push_back(s_des_temp);
-
-        // ---- FINE TRAIETTORIA ---- //
-        if (s_des[k] >= trajectory_time) {break;}
-        
         k++;
 
     }
+    
+    // Check if s_des[last_point] > T and Assign s_des[last_point] = T
+    if (s_des[s_des.size()-1] > trajectory_time) {s_des[s_des.size()-1] = trajectory_time;}
 
     // ---- DEBUG ---- //
     if (simple_debug) {
@@ -719,12 +700,12 @@ std::vector<Vector6d> admittance_control::compute_desired_velocities (std::vecto
     q_des.push_back(q_des[q_des.size()-1]);
 
     // Compute q̇_des[k] = (q_des[k+1] - q_des[k]) / τ, τ = sampling_time
-    for (unsigned int i = 0; i < q_des.size() - 1; i++) {q_dot_des.push_back((q_des[i+1].array() - q_des[i].array()) / sampling_time);}
+    for (unsigned int i = 0; i < q_des.size() - 1; i++) {
 
-    //TODO: check velocity and acceleration limits:
-    // necessario controllare le velocità e se una eccede ridurla solo in quel calcolo, ripartendo però da s_des! 
-    // poichè se rallento s_des[k] < s_des[k-1] + s_dot_des * sampling_time, poiche s_dot_lim < s_dot_des
-    // fare il controllo su s_dot_des subito ? come ?
+        Array6d q_dot_des_array = (q_des[i+1].array() - q_des[i].array()) / sampling_time;
+        q_dot_des.push_back(Vector6d(q_dot_des_array));
+        
+    }
 
     // ---- DEBUG ---- //
     if (complete_debug) {
@@ -741,12 +722,11 @@ std::vector<Vector6d> admittance_control::compute_desired_velocities (std::vecto
 
 }
 
-std::vector<sensor_msgs::JointState> admittance_control::create_scaled_trajectory (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<Vector6d> q_des, std::vector<Vector6d> q_dot_des) {
+std::vector<sensor_msgs::JointState> admittance_control::create_scaled_trajectory (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<Vector6d> q_des, std::vector<Vector6d> q_dot_des, double sampling_time) {
 
     std::vector<sensor_msgs::JointState> scaled_trajectory;
 
     ros::Time start_time = ros::Time::now();
-    const double sampling_time = (input_trajectory[1].header.stamp - input_trajectory[0].header.stamp).toSec();
 
     // Create Scaled Trajectory
     for (unsigned int i = 0; i < q_dot_des.size(); i++) {
@@ -877,8 +857,8 @@ void admittance_control::send_velocity_to_robot (Vector6d velocity) {
 void admittance_control::send_position_to_robot (Vector6d position) {
 
     // Get available controller
-    if (list_controllers_client.call(list_controllers_srv)) {ROS_INFO("Get Available Controllers");} else {ROS_ERROR("Failed to Call Service: \"/controller_manager/list_controllers\"");}
-    std::vector<controller_manager_msgs::ControllerState> controller_list = list_controllers_srv.response.controller;
+    // if (list_controllers_client.call(list_controllers_srv)) {ROS_INFO("Get Available Controllers");} else {ROS_ERROR("Failed to Call Service: \"/controller_manager/list_controllers\"");}
+    // std::vector<controller_manager_msgs::ControllerState> controller_list = list_controllers_srv.response.controller;
 
     switch_controller_srv.request.stop_controllers.resize(1);
     switch_controller_srv.request.start_controllers.resize(1);
@@ -940,17 +920,18 @@ void admittance_control::wait_for_position_reached (Vector6d desired_position, d
     joint_state_callback = false;
 
     // Wait for Joint State Callback
-    while (!joint_state_callback) {ros::spinOnce();}
+    while (ros::ok() && !joint_state_callback) {ros::spinOnce();}
 
     Vector6d current_position(joint_state.position.data());
 
     ros::Time start_time = ros::Time::now();
 
     // Wait until desired_position and current_position are equal with a little tolerance
-    while ((Eigen::abs(desired_position.array() - current_position.array()) > 0.0001).all() || ((ros::Time::now() - start_time).toSec() < maximum_time)) {
+    while (ros::ok() && (Eigen::abs(desired_position.array() - current_position.array()) > 0.0001).all() && (ros::Time::now() - start_time).toSec() < maximum_time) {
 
         ros::spinOnce();
         current_position = Vector6d(joint_state.position.data());
+        ROS_INFO_ONCE("Wait for Starting Position...");
         
     }
 
@@ -994,7 +975,7 @@ Vector6d admittance_control::low_pass_filter(Vector6d input_vec) {
     filter_elements.push_back(input_vec);
 
     // Keep only the last 100 values of the vector
-    while (filter_elements.size() > 100) {filter_elements.erase(filter_elements.begin());}
+    while (ros::ok() && filter_elements.size() > 100) {filter_elements.erase(filter_elements.begin());}
 
     // Median Filter (media = sum / N_elements)
     Vector6d sum, median;
@@ -1007,19 +988,50 @@ Vector6d admittance_control::low_pass_filter(Vector6d input_vec) {
 
 void admittance_control::wait_for_callbacks_initialization (void) {
 
-    ros::Duration(1).sleep();
-
     // Wait for the Callbacks
     while (ros::ok() && (!force_callback || !joint_state_callback)) {
 
         ros::spinOnce();
         
-        if (!force_callback) {ROS_WARN_THROTTLE(3, "Wait for Force Sensor");}
-        if (!joint_state_callback) {ROS_WARN_THROTTLE(3, "Wait for Joint State feedback");}
+        if (!force_callback) {ROS_WARN_DELAYED_THROTTLE(2, "Wait for Force Sensor");}
+        if (!joint_state_callback) {ROS_WARN_DELAYED_THROTTLE(2, "Wait for Joint State feedback");}
 
     }
 
+    std::cout << std::endl;
+
 }
+
+Vector6d admittance_control::compute_ftsensor_starting_offset (void) {
+    
+    std::vector<Vector6d> ftsensor_output;
+
+    while (ros::ok() && ftsensor_output.size() < 100) {
+
+        ros::spinOnce();
+
+        ROS_WARN_DELAYED_THROTTLE(2, "Wait for Zero_FTSensor");
+
+        if (force_callback) {
+                
+            ftsensor_output.push_back(external_wrench);
+            force_callback = false;
+        
+        }
+    
+    }
+
+    // Median Filter (media = sum / N_elements)
+    Vector6d sum, median;
+    for (unsigned int i = 0; i < ftsensor_output.size(); i++) {sum += ftsensor_output[i];}
+    median = sum / ftsensor_output.size();
+
+    ROS_INFO("Zero FTSensor Succesful\n");
+    
+    return median;
+    
+}
+
 
 int admittance_control::sign (double num) {
 
@@ -1046,6 +1058,10 @@ void admittance_control::spinner (void) {
         send_velocity_to_robot(q_dot);
         ros::spinOnce();
         loop_rate.sleep();
+
+    } else if (trajectory_execution_request) {
+
+        trajectory_execution(desired_trajectory);
 
     }
 

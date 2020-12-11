@@ -71,9 +71,10 @@ class admittance_control {
         // ---- Admittance Parameters ---- //
         Matrix6d mass_matrix, damping_matrix;
         double force_dead_zone, torque_dead_zone, admittance_weight;
+        bool use_feedback_velocity, use_ur_real_robot, inertia_reduction;
         
         // ---- Admittance IO ---- //
-        Vector6d external_wrench, x_dot, q_dot;
+        Vector6d external_wrench, ftsensor_start_offset, x_dot, q_dot;
         Vector6d q_dot_last_cycle, x_dot_last_cycle;
         
         // ---- Limits ---- //
@@ -87,9 +88,11 @@ class admittance_control {
         std::vector<std::string> joint_names;
         Eigen::MatrixXd J;
 
-        // ---- Other Variables ---- //
+        // ---- Trajectory Execution ---- //
+        admittance_controller::joint_trajectory desired_trajectory;
+
+        // ---- Feedback Variables ---- //
         bool force_callback, joint_state_callback;
-        bool use_feedback_velocity, use_ur_real_robot, inertia_reduction;
         sensor_msgs::JointState joint_state;
         std::vector<double> joint_position, joint_velocity;
         std::vector<Vector6d> filter_elements;
@@ -108,7 +111,7 @@ class admittance_control {
         
         // ---- ROS SERVICE SERVERS ---- //
         ros::ServiceServer ur10e_freedrive_mode_service, admittance_controller_activation_service;
-        bool admittance_control_request, freedrive_mode_request;
+        bool admittance_control_request, freedrive_mode_request, trajectory_execution_request;
 
         // ---- ROS ACTIONS ---- //
         actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction> *trajectory_client;
@@ -135,22 +138,22 @@ class admittance_control {
 
         // ---- LIMIT DYNAMIC FUNCTIONS ---- //
         Vector6d limit_joint_dynamics (Vector6d joint_velocity);
-        std::vector<sensor_msgs::JointState> limit_joint_dynamics (std::vector<sensor_msgs::JointState> trajectory);
         Vector6d compute_inertia_reduction (Vector6d velocity, Vector6d wrench);
 
         // ---- TRAJECTORY FUNCTIONS ---- //
-        void trajectory_execution (std::vector<sensor_msgs::JointState> trajectory);
-        void trajectory_debug_csv (std::vector<sensor_msgs::JointState> trajectory, std::string trajectory_name);
+        void trajectory_execution (admittance_controller::joint_trajectory desired_trajectory);
+        void stop_robot (void);
         sensor_msgs::JointState add_stop_point (std::vector<sensor_msgs::JointState> *trajectory);
+        void trajectory_debug_csv (std::vector<sensor_msgs::JointState> trajectory, std::string trajectory_name);
 
         // ---- TRAJECTORY SCALING ---- //
         std::vector<sensor_msgs::JointState> trajectory_scaling (admittance_controller::joint_trajectory trajectory);
         void check_requested_scaling (admittance_controller::joint_trajectory trajectory, bool *no_scaling_requested, bool *velocity_scaling_requested);
-        double compute_scaled_velocity (double s_dot_rec, int velocity_scaling_percentage);
+        double compute_scaled_velocity (admittance_controller::joint_trajectory trajectory, double s_dot_rec);
         std::vector<double> compute_s_des (double s_dot_des, double trajectory_time, double sampling_time);
         std::vector<Vector6d> compute_desired_positions (std::vector<double> s_des, std::vector<tk::spline> q_spline6d);
         std::vector<Vector6d> compute_desired_velocities (std::vector<Vector6d> q_des, double sampling_time);
-        std::vector<sensor_msgs::JointState> create_scaled_trajectory (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<Vector6d> q_des, std::vector<Vector6d> q_dot_des);
+        std::vector<sensor_msgs::JointState> create_scaled_trajectory (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<Vector6d> q_des, std::vector<Vector6d> q_dot_des, double sampling_time);
 
         // ---- SPLINE INTERPOLATION ---- //
         std::vector<tk::spline> spline_interpolation (std::vector<Vector6d> data_vector, double spline_lenght, std::string output_file);
@@ -166,6 +169,7 @@ class admittance_control {
         // ---- USEFUL FUNCTIONS ---- //
         Vector6d low_pass_filter(Vector6d input_vec);
         void wait_for_callbacks_initialization (void);
+        Vector6d compute_ftsensor_starting_offset (void);
         int sign (double num);
 
 //----------------------------------------------------------------------------------------------------------------------//
