@@ -33,6 +33,7 @@ admittance_control::admittance_control(
     // ---- ROS SERVICE SERVERS ---- //
     ur10e_freedrive_mode_service = nh.advertiseService("/admittance_controller/ur10e_freedrive_mode_service", &admittance_control::FreedriveMode_Service_Callback, this);
     admittance_controller_activation_service = nh.advertiseService("/admittance_controller/admittance_controller_activation_service", &admittance_control::Admittance_Controller_Activation_Service_Callback, this);
+    change_admittance_parameters_service = nh.advertiseService("/admittance_controller/change_admittance_parameters_service", &admittance_control::Change_Admittance_Parameters_Service_Callback, this);
 
     // ---- ROS SERVICE CLIENTS ---- //
     switch_controller_client = nh.serviceClient<controller_manager_msgs::SwitchController>("/controller_manager/switch_controller");
@@ -207,6 +208,27 @@ bool admittance_control::Admittance_Controller_Activation_Service_Callback (std_
     res.success = true;
     return true;
 
+}
+
+bool admittance_control::Change_Admittance_Parameters_Service_Callback (admittance_controller::parameter_srv::Request &req, admittance_controller::parameter_srv::Response &res) {
+
+    std::string parameter_name = req.parameter_name;
+    double parameter_value = req.parameter_value;
+
+    if (parameter_name == "mass") {
+
+        mass_matrix = Array6d(parameter_value).matrix().asDiagonal();
+        ROS_INFO_STREAM("Mass Matrix:" << std::endl << std::endl << mass_matrix << std::endl);
+
+    } else if (parameter_name == "damping") {
+
+        damping_matrix = Array6d(parameter_value).matrix().asDiagonal();
+        ROS_INFO_STREAM("Damping Matrix:" << std::endl << std::endl << damping_matrix << std::endl);
+
+    }
+
+    res.success = true;
+    return true;
 }
 
 
@@ -493,28 +515,6 @@ sensor_msgs::JointState admittance_control::add_stop_point (std::vector<sensor_m
 
 }
 
-void admittance_control::trajectory_debug_csv (std::vector<sensor_msgs::JointState> trajectory, std::string trajectory_name) {
-
-    std::string package_path = ros::package::getPath("admittance_controller");
-    std::string save_file = package_path + "/debug/" + trajectory_name + "_debug.csv";
-    std::ofstream trajectory_debug = std::ofstream(save_file);
-
-    trajectory_debug << "frame_id,seq,sec,nsec,     ,pos_joint1,pos_joint2,pos_joint2,pos_joint4,pos_joint5,pos_joint6,     ,vel_joint1,vel_joint2,vel_joint3,vel_joint4,vel_joint5,vel_joint6\n\n";
-    
-    for (unsigned int i = 0; i < trajectory.size(); i++) {
-    
-        trajectory_debug << trajectory[i].header.frame_id << "," << trajectory[i].header.seq << "," << trajectory[i].header.stamp.sec << "," << trajectory[i].header.stamp.nsec << ", ,";
-    
-        for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {trajectory_debug << trajectory[i].position[joint_n] << ",";} trajectory_debug << " ,";
-    
-        for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {trajectory_debug << trajectory[i].velocity[joint_n] << ",";} trajectory_debug << "\n";
-    
-    }
-    
-    trajectory_debug.close();
-        
-}
-
 
 //------------------------------------------------- TRAJECTORY SCALING --------------------------------------------------//
 
@@ -522,6 +522,7 @@ void admittance_control::trajectory_debug_csv (std::vector<sensor_msgs::JointSta
 std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (admittance_controller::joint_trajectory trajectory) {
 
     std::vector<sensor_msgs::JointState> input_trajectory = trajectory.trajectory, scaled_trajectory;
+    std::vector<std::string> extra_data = trajectory.extra_data;
     
     // ---- DEBUG ---- //
     if (simple_debug) {trajectory_debug_csv(input_trajectory,"input_trajectory");}
@@ -570,13 +571,12 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
         // Scaled Velocity          ->    ṡ_des = gain * ṡ_rec
         double s_dot_des = compute_scaled_velocity (trajectory, s_dot_rec);
 
-
         // ---- COMPUTE SCALED EVOLUTION ---- //
 
         ROS_WARN("Computing Scaled Trajectory...");
 
         // s_des[k] = s_des[k-1] + ṡ_des * τ, τ = sampling_time
-        std::vector<double> s_des = compute_s_des (s_dot_des, trajectory_time, sampling_control_time);
+        std::vector<double> s_des = compute_s_des (s_dot_des, trajectory_time, sampling_control_time, extra_data);
 
         // q_des[k] = q_des[s[k]]
         std::vector<Vector6d> q_des = compute_desired_positions (s_des, q_spline6d);
@@ -635,7 +635,7 @@ double admittance_control::compute_scaled_velocity (admittance_controller::joint
 
 }
 
-std::vector<double> admittance_control::compute_s_des (double s_dot_des, double trajectory_time, double sampling_time) {
+std::vector<double> admittance_control::compute_s_des (double s_dot_des, double trajectory_time, double sampling_time, std::vector<std::string> extra_data) {
 
     std::vector<double> s_des;
 
@@ -643,6 +643,18 @@ std::vector<double> admittance_control::compute_s_des (double s_dot_des, double 
     s_des.push_back(0);
 
     unsigned int k = 1;
+
+    //TODO: change s_dot_des with extra data
+
+    /*
+     * 1. Check extra data vector (n point in time € [0,T])
+     * 2. Save time in wich exist and extra data (eg. 3.5s -> s = 3.5) -> vector (extra_data_time, extra_data_value)
+     * 3. for (unsigned int i; i < vector(extra_data_time, extra_data_value).size(); i++) {
+     *      while (ros::ok() && s_des[k-1] <= next_extra_data_time) {s_des.push_back(s_des[k-1] + s_dot_des * sampling_time); k++;}
+     *      s_dot_des *= vector(extra_data_time, extra_data_value)[i];
+     *    }
+     * 
+     */
     
     while (ros::ok() && s_des[k-1] <= trajectory_time) {
 
@@ -657,14 +669,7 @@ std::vector<double> admittance_control::compute_s_des (double s_dot_des, double 
     if (s_des[s_des.size()-1] > trajectory_time) {s_des[s_des.size()-1] = trajectory_time;}
 
     // ---- DEBUG ---- //
-    if (simple_debug) {
-        std::string package_path = ros::package::getPath("admittance_controller");
-        std::string save_file = package_path + "/debug/s_des_debug.csv";
-        std::ofstream s_des_debug = std::ofstream(save_file);
-        s_des_debug << "s_des\n";
-        for (unsigned int i = 0; i < s_des.size(); i++) {s_des_debug << s_des[i] << "\n";}
-        s_des_debug.close();
-    }
+    if (simple_debug) {csv_debug(s_des, "s_des");}
 
     return s_des;
 
@@ -678,15 +683,7 @@ std::vector<Vector6d> admittance_control::compute_desired_positions (std::vector
     for (unsigned int i = 0; i < s_des.size(); i++) {q_des.push_back(get_spline_value(q_spline6d,s_des[i]));}
 
     // ---- DEBUG ---- //
-    if (complete_debug) {
-        std::string package_path = ros::package::getPath("admittance_controller");
-        std::string save_file = package_path + "/debug/q_des_debug.csv";
-        std::ofstream q_des_debug = std::ofstream(save_file);
-        q_des_debug << "q_des\n";
-        for (unsigned int i = 0; i < q_des.size(); i++) {
-            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {q_des_debug << q_des[i][joint_n] << ",";} q_des_debug << "\n";}
-        q_des_debug.close();
-    }
+    if (complete_debug) {csv_debug(q_des, "q_des");}
 
     return q_des;
 
@@ -708,15 +705,7 @@ std::vector<Vector6d> admittance_control::compute_desired_velocities (std::vecto
     }
 
     // ---- DEBUG ---- //
-    if (complete_debug) {
-        std::string package_path = ros::package::getPath("admittance_controller");
-        std::string save_file = package_path + "/debug/q_dot_des_debug.csv";
-        std::ofstream q_dot_des_debug = std::ofstream(save_file);
-        q_dot_des_debug << "q_dot_des\n";
-        for (unsigned int i = 0; i < q_dot_des.size(); i++) {
-            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {q_dot_des_debug << q_dot_des[i][joint_n] << ",";} q_dot_des_debug << "\n";}
-        q_dot_des_debug.close();
-    }
+    if (complete_debug) {csv_debug(q_dot_des, "q_dot_des");}
 
     return q_dot_des;
 
@@ -792,18 +781,7 @@ std::vector<tk::spline> admittance_control::spline_interpolation (std::vector<Ve
     }
 
     // ---- DEBUG ---- //
-    if (complete_debug) {
-        std::string package_path = ros::package::getPath("admittance_controller");
-        std::string save_file = package_path + "/debug/" + output_file + "_spline6d_debug.csv";
-        std::ofstream spline6d_debug = std::ofstream(save_file);
-        spline6d_debug << "s, ,Joint1,Joint2,Joint3,Joint4,Joint5,Joint6\n\n";
-        for (unsigned int i = 0; i < data_vector.size(); i++) { 
-            spline6d_debug << s[i] << ", ,";
-            for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {spline6d_debug << spline6d[joint_n](s[i]) << ",";}
-            spline6d_debug << "\n";
-        }
-        spline6d_debug.close();
-    }
+    if (complete_debug) {csv_debug(spline6d, s, data_vector, output_file);}
     
     return spline6d;
 
@@ -1038,6 +1016,63 @@ int admittance_control::sign (double num) {
     if (num >= 0) {return +1;}
     else {return -1;}
     
+}
+
+
+//------------------------------------------------------- DEBUG --------------------------------------------------------//
+
+
+void admittance_control::csv_debug (std::vector<double> vector, std::string name) {
+
+    std::string package_path = ros::package::getPath("admittance_controller");
+    std::string save_file = package_path + "/debug/" + name + "_debug.csv";
+    std::ofstream vector_debug = std::ofstream(save_file);
+    vector_debug << name << "\n";
+    for (unsigned int i = 0; i < vector.size(); i++) {vector_debug << vector[i] << "\n";}
+    vector_debug.close();
+
+}
+
+void admittance_control::csv_debug (std::vector<Vector6d> vector6d, std::string name) {
+
+    std::string package_path = ros::package::getPath("admittance_controller");
+    std::string save_file = package_path + "/debug/" + name + "_debug.csv";
+    std::ofstream vector_debug = std::ofstream(save_file);
+    vector_debug << name << "\n";
+    for (unsigned int i = 0; i < vector6d.size(); i++) {
+        for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {vector_debug << vector6d[i][joint_n] << ",";} vector_debug << "\n";}
+    vector_debug.close();
+
+}
+
+void admittance_control::csv_debug (std::vector<tk::spline> spline6d, std::vector<double> s, std::vector<Vector6d> data_vector, std::string name) {
+    
+    std::string package_path = ros::package::getPath("admittance_controller");
+    std::string save_file = package_path + "/debug/" + name + "_spline6d_debug.csv";
+    std::ofstream spline6d_debug = std::ofstream(save_file);
+    spline6d_debug << "s, ,Joint1,Joint2,Joint3,Joint4,Joint5,Joint6\n\n";
+    for (unsigned int i = 0; i < data_vector.size(); i++) { 
+        spline6d_debug << s[i] << ", ,";
+        for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {spline6d_debug << spline6d[joint_n](s[i]) << ",";}
+        spline6d_debug << "\n";
+    }
+    spline6d_debug.close();
+
+}
+
+void admittance_control::trajectory_debug_csv (std::vector<sensor_msgs::JointState> trajectory, std::string trajectory_name) {
+
+    std::string package_path = ros::package::getPath("admittance_controller");
+    std::string save_file = package_path + "/debug/" + trajectory_name + "_debug.csv";
+    std::ofstream trajectory_debug = std::ofstream(save_file);
+    trajectory_debug << "frame_id,seq,sec,nsec,     ,pos_joint1,pos_joint2,pos_joint2,pos_joint4,pos_joint5,pos_joint6,     ,vel_joint1,vel_joint2,vel_joint3,vel_joint4,vel_joint5,vel_joint6\n\n";
+    for (unsigned int i = 0; i < trajectory.size(); i++) {
+        trajectory_debug << trajectory[i].header.frame_id << "," << trajectory[i].header.seq << "," << trajectory[i].header.stamp.sec << "," << trajectory[i].header.stamp.nsec << ", ,";
+        for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {trajectory_debug << trajectory[i].position[joint_n] << ",";} trajectory_debug << " ,";
+        for (unsigned int joint_n = 0; joint_n < 6; joint_n++) {trajectory_debug << trajectory[i].velocity[joint_n] << ",";} trajectory_debug << "\n";
+    }
+    trajectory_debug.close();
+        
 }
 
 

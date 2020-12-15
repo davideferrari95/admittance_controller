@@ -18,6 +18,7 @@
 #include <sensor_msgs/JointState.h>
 
 #include "admittance_controller/joint_trajectory.h"
+#include "admittance_controller/parameter_srv.h"
 
 #include <std_srvs/Trigger.h>
 #include <std_srvs/SetBool.h>
@@ -110,7 +111,7 @@ class admittance_control {
         std_srvs::Trigger zero_ft_sensor_srv;
         
         // ---- ROS SERVICE SERVERS ---- //
-        ros::ServiceServer ur10e_freedrive_mode_service, admittance_controller_activation_service;
+        ros::ServiceServer ur10e_freedrive_mode_service, admittance_controller_activation_service, change_admittance_parameters_service;
         bool admittance_control_request, freedrive_mode_request, trajectory_execution_request;
 
         // ---- ROS ACTIONS ---- //
@@ -127,6 +128,7 @@ class admittance_control {
         // ---- SERVER CALLBACKS ---- //
         bool FreedriveMode_Service_Callback (std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res);
         bool Admittance_Controller_Activation_Service_Callback (std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res);
+        bool Change_Admittance_Parameters_Service_Callback (admittance_controller::parameter_srv::Request &req, admittance_controller::parameter_srv::Response &res);
 
         // ---- KINEMATIC MODEL FUNCTIONS ---- //
         Eigen::Matrix4d compute_fk (std::vector<double> joint_position, std::vector<double> joint_velocity);
@@ -144,13 +146,12 @@ class admittance_control {
         void trajectory_execution (admittance_controller::joint_trajectory desired_trajectory);
         void stop_robot (void);
         sensor_msgs::JointState add_stop_point (std::vector<sensor_msgs::JointState> *trajectory);
-        void trajectory_debug_csv (std::vector<sensor_msgs::JointState> trajectory, std::string trajectory_name);
 
         // ---- TRAJECTORY SCALING ---- //
         std::vector<sensor_msgs::JointState> trajectory_scaling (admittance_controller::joint_trajectory trajectory);
         void check_requested_scaling (admittance_controller::joint_trajectory trajectory, bool *no_scaling_requested, bool *velocity_scaling_requested);
         double compute_scaled_velocity (admittance_controller::joint_trajectory trajectory, double s_dot_rec);
-        std::vector<double> compute_s_des (double s_dot_des, double trajectory_time, double sampling_time);
+        std::vector<double> compute_s_des (double s_dot_des, double trajectory_time, double sampling_time, std::vector<std::string> extra_data);
         std::vector<Vector6d> compute_desired_positions (std::vector<double> s_des, std::vector<tk::spline> q_spline6d);
         std::vector<Vector6d> compute_desired_velocities (std::vector<Vector6d> q_des, double sampling_time);
         std::vector<sensor_msgs::JointState> create_scaled_trajectory (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<Vector6d> q_des, std::vector<Vector6d> q_dot_des, double sampling_time);
@@ -172,10 +173,12 @@ class admittance_control {
         Vector6d compute_ftsensor_starting_offset (void);
         int sign (double num);
 
-//----------------------------------------------------------------------------------------------------------------------//
-
         // ---- DEBUG ---- //
         std::ofstream ft_sensor_debug;
+        void csv_debug (std::vector<double> vector, std::string name);
+        void csv_debug (std::vector<Vector6d> vector6d, std::string name);
+        void csv_debug (std::vector<tk::spline> spline6d, std::vector<double> s, std::vector<Vector6d> data_vector, std::string name);
+        void trajectory_debug_csv (std::vector<sensor_msgs::JointState> trajectory, std::string trajectory_name);
 
 };
 

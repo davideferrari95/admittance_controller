@@ -10,7 +10,7 @@ find_package(catkin REQUIRED COMPONENTS
   actionlib
   message_generation
 
-	std_msgs
+  std_msgs
   geometry_msgs
   trajectory_msgs
   sensor_msgs
@@ -31,6 +31,11 @@ add_message_files(
   joint_trajectory.msg
 )
 
+add_service_files(
+  FILES
+  parameter_srv.srv
+)
+
 generate_messages(
   DEPENDENCIES
   std_msgs
@@ -47,7 +52,7 @@ catkin_package(
   include
   lib
   CATKIN_DEPENDS
-	message_runtime
+  message_runtime
 )
 
 ###########
