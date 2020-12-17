@@ -447,6 +447,9 @@ void admittance_control::trajectory_execution (admittance_controller::joint_traj
     // Stop Robot if Moving
     stop_robot();
     
+    // Compute Trajectory Time
+    const double T = (desired_trajectory.trajectory[desired_trajectory.trajectory.size()-1].header.stamp - desired_trajectory.trajectory[0].header.stamp).toSec();
+
     // Compute Trajectory Scaling
     std::vector<sensor_msgs::JointState> trajectory = trajectory_scaling(desired_trajectory);
 
@@ -456,8 +459,31 @@ void admittance_control::trajectory_execution (admittance_controller::joint_traj
 
     // Creation of a Stop-Point (zero velocity) in the end of the trajectory
     sensor_msgs::JointState stop_point = add_stop_point(&trajectory);
+    
+    // Check if exist at least one force_keypoint
+    bool force_keypoint_available = false;
+    int force_keypoints_number = force_extra_data_keypoint.size(), next_keypoint_number = 0;
+    if (force_keypoints_number > 0) {force_keypoint_available = true;}
 
     for (unsigned i = 0; i < trajectory.size() - 1; i++) {
+
+        if (force_keypoint_available) {
+    
+            // Compute current s € [0,T] -> (i : trajectory.size()-1 = s : T)
+            double s = i * T / double(trajectory.size() - 2);
+
+            if (s >= force_extra_data_keypoint[next_keypoint_number].time_keypoint) {
+
+                // Apply Desired Force
+                apply_force(force_extra_data_keypoint[next_keypoint_number].data_value);
+
+                // Check if a new keypoint exist
+                if (next_keypoint_number < force_keypoints_number) {next_keypoint_number++;}
+                else {force_keypoint_available = false;}
+
+            }
+
+        }    
 
         // Print Trajectory Execution Percentage
         ROS_INFO_STREAM_THROTTLE(5, "Trajectory Execution Status: " << i * 100 / int(trajectory.size() - 1) << "%");
@@ -496,6 +522,29 @@ void admittance_control::stop_robot (void) {
 
 }
 
+void admittance_control::apply_force (double force_value) {
+
+    // Subtract FTSensor Starting Offset
+    ftsensor_start_offset = compute_ftsensor_starting_offset();
+    for (unsigned i = 0; i < external_wrench.size(); i++) {external_wrench[i] += - ftsensor_start_offset[i];}
+
+    // Move robot very slowly in +z (push with force sensor) until force value reached
+    while (external_wrench[2] < force_value) {
+        
+        //TODO: Compute +z velocity
+        Vector6d z_velocity;
+
+        // Move the Robot
+        send_velocity_to_robot(z_velocity);
+
+        // Sleep 20ms
+        ros::Duration(20/1000).sleep();
+
+    }
+
+
+}
+
 sensor_msgs::JointState admittance_control::add_stop_point (std::vector<sensor_msgs::JointState> *trajectory) {
 
     std::vector<sensor_msgs::JointState> trajectory_temp = *trajectory;
@@ -522,7 +571,7 @@ sensor_msgs::JointState admittance_control::add_stop_point (std::vector<sensor_m
 std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (admittance_controller::joint_trajectory trajectory) {
 
     std::vector<sensor_msgs::JointState> input_trajectory = trajectory.trajectory, scaled_trajectory;
-    std::vector<std::string> extra_data = trajectory.extra_data;
+    std::vector<admittance_controller::parameter_msg> extra_data = trajectory.extra_data;
     
     // ---- DEBUG ---- //
     if (simple_debug) {trajectory_debug_csv(input_trajectory,"input_trajectory");}
@@ -556,7 +605,7 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
         ROS_INFO("Sampling Time: %lf", sampling_time);
 
         //TODO: Obtain Control Time (20ms ≈ 10 * sampling_time)
-        const double sampling_control_time = 20;
+        const double sampling_control_time = 10 * sampling_time;
         ROS_INFO("Sampling Execution Time: %lf", sampling_control_time);
 
         // Spline Interpolation -> Q(s) = spline6d[joint_number](s) con s € [0,T]
@@ -635,33 +684,53 @@ double admittance_control::compute_scaled_velocity (admittance_controller::joint
 
 }
 
-std::vector<double> admittance_control::compute_s_des (double s_dot_des, double trajectory_time, double sampling_time, std::vector<std::string> extra_data) {
+std::vector<double> admittance_control::compute_s_des (double s_dot_des, double trajectory_time, double sampling_time, std::vector<admittance_controller::parameter_msg> extra_data) {
 
     std::vector<double> s_des;
+    velocity_extra_data_keypoint.clear();
+    force_extra_data_keypoint.clear();
 
     // Zero Starting Point
     s_des.push_back(0);
 
-    unsigned int k = 1;
+    unsigned int k = 1;    
 
-    //TODO: change s_dot_des with extra data
+    // Check "extra_data" and save keypoints in time € [0,T]
+    for (unsigned int i = 0; i < extra_data.size(); i++) {
 
-    /*
-     * 1. Check extra data vector (n point in time € [0,T])
-     * 2. Save time in wich exist and extra data (eg. 3.5s -> s = 3.5) -> vector (extra_data_time, extra_data_value)
-     * 3. for (unsigned int i; i < vector(extra_data_time, extra_data_value).size(); i++) {
-     *      while (ros::ok() && s_des[k-1] <= next_extra_data_time) {s_des.push_back(s_des[k-1] + s_dot_des * sampling_time); k++;}
-     *      s_dot_des *= vector(extra_data_time, extra_data_value)[i];
-     *    }
-     * 
-     */
+        // Check for each point if exist extra data
+        if (extra_data[i].parameter_name != "") {
+
+            // Compute s value (i : extra_data.size() = s_value : trajectory_time)
+            double s_value = i * trajectory_time / double(extra_data.size() - 1);
+
+            // Get extra data value
+            if (extra_data[i].parameter_name == "Accelerate") {velocity_extra_data_keypoint.push_back(new_extra_data_keypoint(1.25, s_value));}
+            else if (extra_data[i].parameter_name == "Decelerate") {velocity_extra_data_keypoint.push_back(new_extra_data_keypoint(0.75, s_value));}
+            else if (extra_data[i].parameter_name == "Force") {force_extra_data_keypoint.push_back(new_extra_data_keypoint(extra_data[i].parameter_value, s_value));}
+
+        }
+
+    }
+
+    // Assign Starting and Ending "extra_data" keypoints
+    velocity_extra_data_keypoint.insert(velocity_extra_data_keypoint.begin(), new_extra_data_keypoint(1,0));
+    velocity_extra_data_keypoint.push_back(new_extra_data_keypoint(1,trajectory_time));
     
-    while (ros::ok() && s_des[k-1] <= trajectory_time) {
+    // Split Computation into part, each of them with one s_dot_des
+    for (unsigned int i = 0; i < velocity_extra_data_keypoint.size(); i++) {
+
+        // Change s_dot_des with extra_data
+        s_dot_des *= velocity_extra_data_keypoint[i].data_value;
+
+        while (ros::ok() && s_des[k-1] <= velocity_extra_data_keypoint[i+1].time_keypoint) {
 
         // Compute s[k] = s[k-1] + ṡ * τ, τ = sampling_time
         s_des.push_back(s_des[k-1] + s_dot_des * sampling_time);
 
         k++;
+
+        }
 
     }
     
@@ -1010,7 +1079,6 @@ Vector6d admittance_control::compute_ftsensor_starting_offset (void) {
     
 }
 
-
 int admittance_control::sign (double num) {
 
     if (num >= 0) {return +1;}
@@ -1018,6 +1086,15 @@ int admittance_control::sign (double num) {
     
 }
 
+extra_data_keypoint admittance_control::new_extra_data_keypoint (double data_value, double time_keypoint) {
+
+    extra_data_keypoint temp;
+    temp.data_value = data_value;
+    temp.time_keypoint = time_keypoint;
+
+    return temp;
+
+}
 
 //------------------------------------------------------- DEBUG --------------------------------------------------------//
 

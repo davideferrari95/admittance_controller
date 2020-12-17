@@ -29,6 +29,7 @@ find_package(catkin REQUIRED COMPONENTS
 add_message_files(
   FILES
   joint_trajectory.msg
+  parameter_msg.msg
 )
 
 add_service_files(

@@ -17,6 +17,7 @@
 #include <trajectory_msgs/JointTrajectory.h>
 #include <sensor_msgs/JointState.h>
 
+#include "admittance_controller/parameter_msg.h"
 #include "admittance_controller/joint_trajectory.h"
 #include "admittance_controller/parameter_srv.h"
 
@@ -40,6 +41,11 @@ typedef Matrix<double, 7, 1> Vector7d;
 typedef Matrix<double, 6, 1> Vector6d;
 typedef Matrix<double, 6, 6> Matrix6d;
 typedef Array<double, 6, 1> Array6d;
+
+struct extra_data_keypoint {
+    double time_keypoint;
+    double data_value;
+};
 
 #define GET_VARIABLE_NAME(Variable) (#Variable)
 
@@ -91,6 +97,7 @@ class admittance_control {
 
         // ---- Trajectory Execution ---- //
         admittance_controller::joint_trajectory desired_trajectory;
+        std::vector<extra_data_keypoint> velocity_extra_data_keypoint, force_extra_data_keypoint;
 
         // ---- Feedback Variables ---- //
         bool force_callback, joint_state_callback;
@@ -144,6 +151,7 @@ class admittance_control {
 
         // ---- TRAJECTORY FUNCTIONS ---- //
         void trajectory_execution (admittance_controller::joint_trajectory desired_trajectory);
+        void apply_force (double force_value);
         void stop_robot (void);
         sensor_msgs::JointState add_stop_point (std::vector<sensor_msgs::JointState> *trajectory);
 
@@ -151,7 +159,7 @@ class admittance_control {
         std::vector<sensor_msgs::JointState> trajectory_scaling (admittance_controller::joint_trajectory trajectory);
         void check_requested_scaling (admittance_controller::joint_trajectory trajectory, bool *no_scaling_requested, bool *velocity_scaling_requested);
         double compute_scaled_velocity (admittance_controller::joint_trajectory trajectory, double s_dot_rec);
-        std::vector<double> compute_s_des (double s_dot_des, double trajectory_time, double sampling_time, std::vector<std::string> extra_data);
+        std::vector<double> compute_s_des (double s_dot_des, double trajectory_time, double sampling_time, std::vector<admittance_controller::parameter_msg> extra_data);
         std::vector<Vector6d> compute_desired_positions (std::vector<double> s_des, std::vector<tk::spline> q_spline6d);
         std::vector<Vector6d> compute_desired_velocities (std::vector<Vector6d> q_des, double sampling_time);
         std::vector<sensor_msgs::JointState> create_scaled_trajectory (std::vector<sensor_msgs::JointState> input_trajectory, std::vector<Vector6d> q_des, std::vector<Vector6d> q_dot_des, double sampling_time);
@@ -172,6 +180,7 @@ class admittance_control {
         void wait_for_callbacks_initialization (void);
         Vector6d compute_ftsensor_starting_offset (void);
         int sign (double num);
+        extra_data_keypoint new_extra_data_keypoint (double data_value, double data_keypoint);
 
         // ---- DEBUG ---- //
         std::ofstream ft_sensor_debug;
