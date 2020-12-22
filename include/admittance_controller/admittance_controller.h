@@ -157,7 +157,7 @@ class admittance_control {
 
         // ---- TRAJECTORY SCALING ---- //
         std::vector<sensor_msgs::JointState> trajectory_scaling (admittance_controller::joint_trajectory trajectory);
-        void check_requested_scaling (admittance_controller::joint_trajectory trajectory, bool *no_scaling_requested, bool *velocity_scaling_requested);
+        void check_requested_scaling (admittance_controller::joint_trajectory *trajectory);
         double compute_scaled_velocity (admittance_controller::joint_trajectory trajectory, double s_dot_rec);
         std::vector<double> compute_s_des (double s_dot_des, double trajectory_time, double sampling_time, std::vector<admittance_controller::parameter_msg> extra_data);
         std::vector<Vector6d> compute_desired_positions (std::vector<double> s_des, std::vector<tk::spline> q_spline6d);
@@ -173,14 +173,21 @@ class admittance_control {
         void send_velocity_to_robot (Vector6d velocity);
         void send_position_to_robot (Vector6d position);
         void wait_for_position_reached (Vector6d desired_position, double maximum_time);
-        void freedrive_mode (bool activation);
+
+        // ---- UR10e FUNCTIONS ---- //
+        void wait_for_callbacks_initialization (void);
+        void zero_ft_sensor (void);
+        void ur10e_send_script_command (std::string command);
+        void start_freedrive_mode (void);
+        void stop_freedrive_mode (void);
 
         // ---- USEFUL FUNCTIONS ---- //
         Vector6d low_pass_filter(Vector6d input_vec);
-        void wait_for_callbacks_initialization (void);
-        Vector6d compute_ftsensor_starting_offset (void);
         int sign (double num);
+
+        // ---- VARIABLE CREATION FUNCTIONS ---- //
         extra_data_keypoint new_extra_data_keypoint (double data_value, double data_keypoint);
+        Vector6d new_vector_6d (double x, double y, double z, double roll, double pitch, double yaw);
 
         // ---- DEBUG ---- //
         std::ofstream ft_sensor_debug;

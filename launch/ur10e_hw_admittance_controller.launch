@@ -1,0 +1,30 @@
+<launch>
+
+  <!--	Arguments	 -->
+
+  <arg name="load_robot_model"      		  default="true"/>
+  <arg name="use_ur_real_robot"	          default="true"/>
+  <arg name="use_feedback_velocity"	      default="true"/>
+
+  <arg name="topic_names_file"				    default="$(find admittance_controller)/config/ur10e_topic_names.yaml"/>
+  <arg name="admittance_parameters_file"  default="$(find admittance_controller)/config/ur10e_parameters.yaml"/>
+
+
+  <!--  Load the URDF, SRDF and other .yaml configuration files on the ROS Param Server  -->
+
+  <include if="$(arg load_robot_model)" file="$(find ur10_e_moveit_config)/launch/planning_context.launch">
+    <arg name="load_robot_description" value="true"/>
+    <arg name="limited" value="false"/>
+  </include>
+
+
+  <!--  Admittance Controller Node  -->
+  
+  <node pkg="admittance_controller" name="admittance_controller_Node" type="admittance_controller_Node" output="screen">
+    <param name="use_feedback_velocity" value="$(arg use_feedback_velocity)"/>
+    <param name="use_ur_real_robot"     value="$(arg use_ur_real_robot)"/>
+    <rosparam file="$(arg topic_names_file)"            command="load"/>
+    <rosparam file="$(arg admittance_parameters_file)"  command="load"/>
+	</node>
+
+</launch>

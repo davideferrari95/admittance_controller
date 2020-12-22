@@ -79,7 +79,7 @@ admittance_control::admittance_control(
         ROS_INFO_ONCE("Troque Dead Zone:  %.2f", torque_dead_zone);
         ROS_INFO_ONCE("Admittance Weight: %.2f", admittance_weight);
         ROS_INFO_ONCE("Inertia Reduction: %s", inertia_reduction ? "true" : "false");
-        ROS_INFO_STREAM_ONCE("Cycle Time: " << loop_rate.expectedCycleTime().toSec()*1000 << " ms" << std::endl);
+        ROS_INFO_STREAM_ONCE("Cycle Time: " << loop_rate.expectedCycleTime().toSec()*1000 << " ms\n");
     }
     
     // ---- DEBUG ---- //
@@ -94,9 +94,7 @@ admittance_control::admittance_control(
     wait_for_callbacks_initialization();
 
     // ---- ZERO FT SENSOR ---- //
-    // while (use_ur_real_robot && !zero_ft_sensor_client.call(zero_ft_sensor_srv)) {ROS_WARN_THROTTLE(2,"Wait for Service: \"/ur_hardware_interface/zero_ftsensor\"");}
-    // if (zero_ft_sensor_client.call(zero_ft_sensor_srv)) ROS_INFO("Succesful Request \"zero_ftsensor\"\n");
-    ftsensor_start_offset = compute_ftsensor_starting_offset();
+    zero_ft_sensor();
 
 }
 
@@ -185,7 +183,8 @@ bool admittance_control::FreedriveMode_Service_Callback (std_srvs::SetBool::Requ
 
     freedrive_mode_request = req.data;
 
-    freedrive_mode(freedrive_mode_request);
+    if (freedrive_mode_request) {start_freedrive_mode();}
+    else {stop_freedrive_mode();}
     
     res.success = true;
     return true;
@@ -200,8 +199,7 @@ bool admittance_control::Admittance_Controller_Activation_Service_Callback (std_
     if (admittance_control_request) {
 
         // Deactivate FreeDrive Mode if Active
-        freedrive_mode_request = false;
-        freedrive_mode(freedrive_mode_request);
+        if (freedrive_mode_request) {stop_freedrive_mode();}
     
     }
 
@@ -462,8 +460,10 @@ void admittance_control::trajectory_execution (admittance_controller::joint_traj
     
     // Check if exist at least one force_keypoint
     bool force_keypoint_available = false;
-    int force_keypoints_number = force_extra_data_keypoint.size(), next_keypoint_number = 0;
-    if (force_keypoints_number > 0) {force_keypoint_available = true;}
+    int next_keypoint_number = 0;
+    if (force_extra_data_keypoint.size() > 0) {force_keypoint_available = true;}
+
+    ROS_WARN("Starting Trajectory Execution");
 
     for (unsigned i = 0; i < trajectory.size() - 1; i++) {
 
@@ -478,7 +478,7 @@ void admittance_control::trajectory_execution (admittance_controller::joint_traj
                 apply_force(force_extra_data_keypoint[next_keypoint_number].data_value);
 
                 // Check if a new keypoint exist
-                if (next_keypoint_number < force_keypoints_number) {next_keypoint_number++;}
+                if (next_keypoint_number < force_extra_data_keypoint.size() - 1) {next_keypoint_number++;}
                 else {force_keypoint_available = false;}
 
             }
@@ -506,7 +506,7 @@ void admittance_control::trajectory_execution (admittance_controller::joint_traj
     ROS_WARN("Trajectory Completed\n");
 
     // Re-Start Admittance Control
-    ftsensor_start_offset = compute_ftsensor_starting_offset();
+    zero_ft_sensor();
     admittance_control_request = true;
 
     ROS_WARN("Restart Admittance Control\n");
@@ -524,15 +524,28 @@ void admittance_control::stop_robot (void) {
 
 void admittance_control::apply_force (double force_value) {
 
-    // Subtract FTSensor Starting Offset
-    ftsensor_start_offset = compute_ftsensor_starting_offset();
-    for (unsigned i = 0; i < external_wrench.size(); i++) {external_wrench[i] += - ftsensor_start_offset[i];}
+    std::cout << "\n";
+    ROS_WARN("Force Application Requested: %.2f N", force_value);
 
-    // Move robot very slowly in +z (push with force sensor) until force value reached
-    while (external_wrench[2] < force_value) {
+    // Compute FTSensor Starting Offset
+    zero_ft_sensor();
+
+    // Move robot very slowly in -z (push with force sensor) until force value reached
+    while (external_wrench[2] > -force_value) {
+
+        ros::spinOnce();
+
+        // Compute Manipulator Jacobian
+        J = compute_arm_jacobian(joint_position, joint_velocity);
+
+        // Subtract FTSensor Starting Offset
+        for (unsigned i = 0; i < external_wrench.size(); i++) {external_wrench[i] += - ftsensor_start_offset[i];}
+
+        // Compute Cartesian +z Velocity
+        Vector6d desired_z_velocity_cartesian = new_vector_6d(0,0,-0.01,0,0,0);
         
-        //TODO: Compute +z velocity
-        Vector6d z_velocity;
+        // Inverse Kinematic for Joint Velocity
+        Vector6d z_velocity = J.inverse() * desired_z_velocity_cartesian;
 
         // Move the Robot
         send_velocity_to_robot(z_velocity);
@@ -542,6 +555,10 @@ void admittance_control::apply_force (double force_value) {
 
     }
 
+    ROS_WARN("Force Applied, Resuming Trajectory Execution\n");
+
+    // Send Zero Velocity
+    send_velocity_to_robot(new_vector_6d(0,0,0,0,0,0));
 
 }
 
@@ -577,72 +594,64 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
     if (simple_debug) {trajectory_debug_csv(input_trajectory,"input_trajectory");}
 
     // ---- Check Requested Scaling ---- //
-    bool no_scaling_requested = false, velocity_scaling_requested = false;
-    check_requested_scaling (trajectory, &no_scaling_requested, &velocity_scaling_requested);
-
-
-    // ---- NO-SCALING Requested ---- //  ->  No-Changes on Input Trajectory
-    if (no_scaling_requested) {scaled_trajectory = input_trajectory;}
+    check_requested_scaling (&trajectory);
     
 
-    // ---- TRAJECTORY SCALING Requested ---- //
-    else if (velocity_scaling_requested) {
-
-        // Creation of a Stop-Point (zero velocity) in the end of the trajectory
-        sensor_msgs::JointState stop_point = add_stop_point(&input_trajectory);
+    // Creation of a Stop-Point (zero velocity) in the end of the trajectory
+    sensor_msgs::JointState stop_point = add_stop_point(&input_trajectory);
 
 
-        // ---- Q(s) SPLINE INTERPOLATION ---- //
+    // ---- Q(s) SPLINE INTERPOLATION ---- //
 
-        // Get Input Positions q(t)
-        std::vector<Vector6d> input_positions;
-        for (unsigned i = 0; i < input_trajectory.size() - 1; i++) {input_positions.push_back(Vector6d(input_trajectory[i].position.data()));}
+    // Get Input Positions q(t)
+    std::vector<Vector6d> input_positions;
+    for (unsigned i = 0; i < input_trajectory.size() - 1; i++) {input_positions.push_back(Vector6d(input_trajectory[i].position.data()));}
 
-        // Get Trajectory Registration Time & Sampling Time
-        const double trajectory_time = (input_trajectory[input_trajectory.size()-1].header.stamp - input_trajectory[0].header.stamp).toSec();
-        const double sampling_time = (input_trajectory[1].header.stamp - input_trajectory[0].header.stamp).toSec();
-        ROS_INFO("Trajectory Time: %lf", trajectory_time);
-        ROS_INFO("Sampling Time: %lf", sampling_time);
+    // Get Trajectory Registration Time & Sampling Time
+    const double trajectory_time = (input_trajectory[input_trajectory.size()-1].header.stamp - input_trajectory[0].header.stamp).toSec();
+    const double sampling_time = (input_trajectory[1].header.stamp - input_trajectory[0].header.stamp).toSec();
+    ROS_INFO("Trajectory Time: %lf", trajectory_time);
+    ROS_INFO("Sampling Time: %lf", sampling_time);
 
-        //TODO: Obtain Control Time (20ms ≈ 10 * sampling_time)
-        const double sampling_control_time = 10 * sampling_time;
-        ROS_INFO("Sampling Execution Time: %lf", sampling_control_time);
+    // Obtain Control Time (16ms ≈ 8 * sampling_time)
+    const double sampling_control_time = 8 * sampling_time;
+    ROS_INFO("Sampling Execution Time: %lf", sampling_control_time);
 
-        // Spline Interpolation -> Q(s) = spline6d[joint_number](s) con s € [0,T]
-        std::vector<tk::spline> q_spline6d = spline_interpolation (input_positions, trajectory_time, GET_VARIABLE_NAME(input_positions));
-
- 
-        // ---- COMPUTE SCALED VELOCITY ---- //
-
-        // Registration Velocity    ->    If t ∈ [0,T] and s ∈ [0,T] -> ṡ_rec = 1
-        double s_dot_rec = 1;
-
-        // Scaled Velocity          ->    ṡ_des = gain * ṡ_rec
-        double s_dot_des = compute_scaled_velocity (trajectory, s_dot_rec);
-
-        // ---- COMPUTE SCALED EVOLUTION ---- //
-
-        ROS_WARN("Computing Scaled Trajectory...");
-
-        // s_des[k] = s_des[k-1] + ṡ_des * τ, τ = sampling_time
-        std::vector<double> s_des = compute_s_des (s_dot_des, trajectory_time, sampling_control_time, extra_data);
-
-        // q_des[k] = q_des[s[k]]
-        std::vector<Vector6d> q_des = compute_desired_positions (s_des, q_spline6d);
+    // Spline Interpolation -> Q(s) = spline6d[joint_number](s) con s € [0,T]
+    std::vector<tk::spline> q_spline6d = spline_interpolation (input_positions, trajectory_time, GET_VARIABLE_NAME(input_positions));
 
 
-        // ---- COMPUTE CONTROL VELOCITY ---- //
+    // ---- COMPUTE SCALED VELOCITY ---- //
 
-        // q̇_des[k] = (q_des[k+1] - q_des[k]) / τ
-        std::vector<Vector6d> q_dot_des = compute_desired_velocities (q_des, sampling_control_time);
+    // Registration Velocity    ->    If t ∈ [0,T] and s ∈ [0,T] -> ṡ_rec = 1
+    double s_dot_rec = 1;
+
+    // Scaled Velocity          ->    ṡ_des = gain * ṡ_rec
+    double s_dot_des = compute_scaled_velocity (trajectory, s_dot_rec);
+
+    // ---- COMPUTE SCALED EVOLUTION ---- //
+
+    std::cout << "\n";
+    ROS_WARN("Computing Scaled Trajectory...");
+
+    // s_des[k] = s_des[k-1] + ṡ_des * τ, τ = sampling_time
+    std::vector<double> s_des = compute_s_des (s_dot_des, trajectory_time, sampling_control_time, extra_data);
+
+    // q_des[k] = q_des[s[k]]
+    std::vector<Vector6d> q_des = compute_desired_positions (s_des, q_spline6d);
 
 
-        // ---- SCALED TRAJECTORY CREATION ---- //
+    // ---- COMPUTE CONTROL VELOCITY ---- //
 
-        // Create trajectory with computed positions and velocities
-        scaled_trajectory = create_scaled_trajectory (input_trajectory, q_des, q_dot_des, sampling_control_time);
+    // q̇_des[k] = (q_des[k+1] - q_des[k]) / τ
+    std::vector<Vector6d> q_dot_des = compute_desired_velocities (q_des, sampling_control_time);
 
-    }
+
+    // ---- SCALED TRAJECTORY CREATION ---- //
+
+    // Create trajectory with computed positions and velocities
+    scaled_trajectory = create_scaled_trajectory (input_trajectory, q_des, q_dot_des, sampling_control_time);
+
 
     return scaled_trajectory;
 
@@ -652,16 +661,23 @@ std::vector<sensor_msgs::JointState> admittance_control::trajectory_scaling (adm
 //-------------------------------------------- TRAJECTORY SCALING FUNCTIONS ---------------------------------------------//
 
 
-void admittance_control::check_requested_scaling (admittance_controller::joint_trajectory trajectory, bool *no_scaling_requested, bool *velocity_scaling_requested) {
+void admittance_control::check_requested_scaling (admittance_controller::joint_trajectory *trajectory) {
 
     // Percentage of Scaling [%]
-    int percentage_vel = trajectory.velocity_scaling_percentage;
+    int percentage_vel = trajectory -> velocity_scaling_percentage;
 
     // ---- NO-SCALING Requested ---- //
-    if (percentage_vel == 100 || percentage_vel == 0) {*no_scaling_requested = true; ROS_INFO("No-Scaling Requested");}
+    if (percentage_vel == 100 || percentage_vel == 0) {
+        
+        ROS_INFO("No-Scaling Requested");
+
+        // Set No-Scaling Velocity to 100
+        trajectory -> velocity_scaling_percentage = 100;
+    
+    }
 
     // ---- PERCENTAGE-VELOCITY Requested ---- //
-    else if (percentage_vel != 100 && percentage_vel != 0) {*velocity_scaling_requested = true; ROS_INFO_STREAM("Velocity-Scaling Requested: " << percentage_vel << "%");}
+    else if (percentage_vel != 100 && percentage_vel != 0) {ROS_INFO_STREAM("Velocity-Scaling Requested: " << percentage_vel << "%");}
 
 }
 
@@ -705,8 +721,8 @@ std::vector<double> admittance_control::compute_s_des (double s_dot_des, double 
             double s_value = i * trajectory_time / double(extra_data.size() - 1);
 
             // Get extra data value
-            if (extra_data[i].parameter_name == "Accelerate") {velocity_extra_data_keypoint.push_back(new_extra_data_keypoint(1.25, s_value));}
-            else if (extra_data[i].parameter_name == "Decelerate") {velocity_extra_data_keypoint.push_back(new_extra_data_keypoint(0.75, s_value));}
+            if (extra_data[i].parameter_name == "Accelerate") {velocity_extra_data_keypoint.push_back(new_extra_data_keypoint(2.0, s_value));}
+            else if (extra_data[i].parameter_name == "Decelerate") {velocity_extra_data_keypoint.push_back(new_extra_data_keypoint(0.50, s_value));}
             else if (extra_data[i].parameter_name == "Force") {force_extra_data_keypoint.push_back(new_extra_data_keypoint(extra_data[i].parameter_value, s_value));}
 
         }
@@ -723,12 +739,15 @@ std::vector<double> admittance_control::compute_s_des (double s_dot_des, double 
         // Change s_dot_des with extra_data
         s_dot_des *= velocity_extra_data_keypoint[i].data_value;
 
+        // ---- DEBUG ---- //
+        if (complete_debug) {ROS_INFO_STREAM("Scaling Velocity: " << s_dot_des << " -> From " << std::floor(100*velocity_extra_data_keypoint[i].time_keypoint/trajectory_time) << "% of trajectory");}
+
         while (ros::ok() && s_des[k-1] <= velocity_extra_data_keypoint[i+1].time_keypoint) {
 
-        // Compute s[k] = s[k-1] + ṡ * τ, τ = sampling_time
-        s_des.push_back(s_des[k-1] + s_dot_des * sampling_time);
+            // Compute s[k] = s[k-1] + ṡ * τ, τ = sampling_time
+            s_des.push_back(s_des[k-1] + s_dot_des * sampling_time);
 
-        k++;
+            k++;
 
         }
 
@@ -914,10 +933,11 @@ void admittance_control::send_position_to_robot (Vector6d position) {
     switch_controller_srv.request.stop_controllers[0]  = "joint_group_vel_controller";
     switch_controller_srv.request.start_controllers[0] = "scaled_pos_joint_traj_controller";
     switch_controller_srv.request.strictness = switch_controller_srv.request.STRICT;
+    std::cout << "\n";
 
     // Call Switch Controller Service
     if (switch_controller_client.call(switch_controller_srv)) {
-
+        
         ROS_WARN("Controller Changed from \"%s\" to \"%s\"", switch_controller_srv.request.stop_controllers[0].c_str(), switch_controller_srv.request.start_controllers[0].c_str());
         ros::Duration(1).sleep();
 
@@ -951,13 +971,13 @@ void admittance_control::send_position_to_robot (Vector6d position) {
     // Call Switch Controller Service
     if (switch_controller_client.call(switch_controller_srv)) {
 
-        ROS_WARN("Controller Changed from \"%s\" to \"%s\"", switch_controller_srv.request.stop_controllers[0].c_str(), switch_controller_srv.request.start_controllers[0].c_str());
+        ROS_WARN("Controller Changed from \"%s\" to \"%s\"\n", switch_controller_srv.request.stop_controllers[0].c_str(), switch_controller_srv.request.start_controllers[0].c_str());
         ros::Duration(1).sleep();
         
     } else {
         
         ROS_ERROR("Failed to Call Service: \"/controller_manager/switch_controller\"");
-        ROS_ERROR("Failed to Switch Controllers");
+        ROS_ERROR("Failed to Switch Controllers\n");
     }
 
 }
@@ -984,31 +1004,73 @@ void admittance_control::wait_for_position_reached (Vector6d desired_position, d
 
 }
 
-void admittance_control::freedrive_mode (bool activation) {
 
-    std_msgs::String freedrive_mode_command;
+//--------------------------------------------------- UR10e FUNCTIONS ---------------------------------------------------//
 
-    if (activation) {
 
-        // Turn ON FreedriveMode
-        ROS_WARN("FreeDrive Mode Activated");
-        freedrive_mode_command.data = "def prog(): freedrive_mode() while(1) end";
+void admittance_control::wait_for_callbacks_initialization (void) {
 
-        // Deactivate Admittance Controller
-        admittance_control_request = false;
-    
-    } else {
+    ros::spinOnce();
 
-        // Turn OFF FreedriveMode
-        ROS_WARN("FreeDrive Mode Dectivated");
-        freedrive_mode_command.data = "def prog(): end";
+    // Wait for the Callbacks
+    while (ros::ok() && (!force_callback || !joint_state_callback)) {
 
-        // Activate Admittance Controller
-        admittance_control_request = true;
-    
+        ros::spinOnce();
+        
+        if (!force_callback) {ROS_WARN_THROTTLE(2, "Wait for Force Sensor");}
+        if (!joint_state_callback) {ROS_WARN_THROTTLE(2, "Wait for Joint State Feedback");}
+
     }
 
-    ur10e_script_command_publisher.publish(freedrive_mode_command);
+    std::cout << std::endl;
+
+}
+
+void admittance_control::zero_ft_sensor (void) {
+
+    while (use_ur_real_robot && !zero_ft_sensor_client.call(zero_ft_sensor_srv)) {ROS_WARN_THROTTLE(2,"Wait for Service: \"/ur_hardware_interface/zero_ftsensor\"");}
+    if (zero_ft_sensor_client.call(zero_ft_sensor_srv)) ROS_INFO("Succesful Request \"zero_ftsensor\"\n");
+
+    // ur10e_send_script_command("zero_ftsensor()");
+
+}
+
+void admittance_control::ur10e_send_script_command (std::string command) {
+
+    std_msgs::String script_command;
+
+    script_command.data = command;
+
+    ur10e_script_command_publisher.publish(script_command);
+
+}
+
+void admittance_control::start_freedrive_mode (void) {
+    
+    // Turn ON FreedriveMode
+    ROS_WARN("FreeDrive Mode Activated");
+    
+    ur10e_send_script_command("def prog(): \
+    freedrive_mode() \
+    sleep(3600) \
+    end");
+
+    // Deactivate Admittance Controller
+    admittance_control_request = false;
+
+}
+
+void admittance_control::stop_freedrive_mode (void) {
+
+    // Turn OFF FreedriveMode
+    ROS_WARN("FreeDrive Mode Dectivated\n");
+
+    ur10e_send_script_command("def prog(): \
+    end");
+
+    // Activate Admittance Controller
+    zero_ft_sensor();
+    admittance_control_request = true;
 
 }
 
@@ -1033,58 +1095,16 @@ Vector6d admittance_control::low_pass_filter(Vector6d input_vec) {
 
 }
 
-void admittance_control::wait_for_callbacks_initialization (void) {
-
-    // Wait for the Callbacks
-    while (ros::ok() && (!force_callback || !joint_state_callback)) {
-
-        ros::spinOnce();
-        
-        if (!force_callback) {ROS_WARN_DELAYED_THROTTLE(2, "Wait for Force Sensor");}
-        if (!joint_state_callback) {ROS_WARN_DELAYED_THROTTLE(2, "Wait for Joint State feedback");}
-
-    }
-
-    std::cout << std::endl;
-
-}
-
-Vector6d admittance_control::compute_ftsensor_starting_offset (void) {
-    
-    std::vector<Vector6d> ftsensor_output;
-
-    while (ros::ok() && ftsensor_output.size() < 100) {
-
-        ros::spinOnce();
-
-        ROS_WARN_DELAYED_THROTTLE(2, "Wait for Zero_FTSensor");
-
-        if (force_callback) {
-                
-            ftsensor_output.push_back(external_wrench);
-            force_callback = false;
-        
-        }
-    
-    }
-
-    // Median Filter (media = sum / N_elements)
-    Vector6d sum, median;
-    for (unsigned int i = 0; i < ftsensor_output.size(); i++) {sum += ftsensor_output[i];}
-    median = sum / ftsensor_output.size();
-
-    ROS_INFO("Zero FTSensor Succesful\n");
-    
-    return median;
-    
-}
-
 int admittance_control::sign (double num) {
 
     if (num >= 0) {return +1;}
     else {return -1;}
     
 }
+
+
+//--------------------------------------------- VARIABLE CREATION FUNCTIONS ---------------------------------------------//
+
 
 extra_data_keypoint admittance_control::new_extra_data_keypoint (double data_value, double time_keypoint) {
 
@@ -1095,6 +1115,19 @@ extra_data_keypoint admittance_control::new_extra_data_keypoint (double data_val
     return temp;
 
 }
+
+Vector6d admittance_control::new_vector_6d (double x, double y, double z, double roll, double pitch, double yaw) {
+
+    Vector6d temp;
+    temp.setZero();
+
+    temp[0] = x;    temp[1] = y;     temp[2] = z;
+    temp[3] = roll; temp[4] = pitch; temp[5] = yaw;
+
+    return temp;
+
+}
+
 
 //------------------------------------------------------- DEBUG --------------------------------------------------------//
 
@@ -1161,16 +1194,19 @@ void admittance_control::spinner (void) {
     ros::spinOnce();
 
     // FreeDrive Mode
-    if (freedrive_mode_request) {ros::spinOnce();}
-    
+    if (freedrive_mode_request) {
+        
+        ros::spinOnce();
+        
     // Admittance Controller
-    else if (admittance_control_request) {
+    } else if (admittance_control_request) {
 
         compute_admittance();
         send_velocity_to_robot(q_dot);
         ros::spinOnce();
         loop_rate.sleep();
 
+    // Trajectory Execution
     } else if (trajectory_execution_request) {
 
         trajectory_execution(desired_trajectory);
