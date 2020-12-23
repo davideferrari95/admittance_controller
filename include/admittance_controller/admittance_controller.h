@@ -112,13 +112,13 @@ class admittance_control {
         ros::Publisher joint_trajectory_publisher, joint_group_vel_controller_publisher, ur10e_script_command_publisher;
 
         // ---- ROS SERVICE CLIENTS ---- //
-        ros::ServiceClient switch_controller_client, list_controllers_client, zero_ft_sensor_client;
+        ros::ServiceClient switch_controller_client, list_controllers_client, zero_ft_sensor_client, ur10e_resend_robot_program, ur10e_play_urcap;
         controller_manager_msgs::SwitchController switch_controller_srv;
         controller_manager_msgs::ListControllers list_controllers_srv;
-        std_srvs::Trigger zero_ft_sensor_srv;
+        std_srvs::Trigger zero_ft_sensor_srv, ur10e_resend_robot_program_srv, ur10e_play_urcap_srv;
         
         // ---- ROS SERVICE SERVERS ---- //
-        ros::ServiceServer ur10e_freedrive_mode_service, admittance_controller_activation_service, change_admittance_parameters_service;
+        ros::ServiceServer admittance_controller_activation_service, change_admittance_parameters_service, ur10e_freedrive_mode_service, ur10e_restart_urcap_service;
         bool admittance_control_request, freedrive_mode_request, trajectory_execution_request;
 
         // ---- ROS ACTIONS ---- //
@@ -133,9 +133,10 @@ class admittance_control {
         void trajectory_execution_Callback (const admittance_controller::joint_trajectory::ConstPtr &);
 
         // ---- SERVER CALLBACKS ---- //
-        bool FreedriveMode_Service_Callback (std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res);
         bool Admittance_Controller_Activation_Service_Callback (std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res);
         bool Change_Admittance_Parameters_Service_Callback (admittance_controller::parameter_srv::Request &req, admittance_controller::parameter_srv::Response &res);
+        bool FreedriveMode_Service_Callback (std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res);
+        bool Restart_URCap_Service_Callback (std_srvs::Trigger::Request &req, std_srvs::Trigger::Response &res);
 
         // ---- KINEMATIC MODEL FUNCTIONS ---- //
         Eigen::Matrix4d compute_fk (std::vector<double> joint_position, std::vector<double> joint_velocity);
@@ -180,6 +181,7 @@ class admittance_control {
         void ur10e_send_script_command (std::string command);
         void start_freedrive_mode (void);
         void stop_freedrive_mode (void);
+        void ur10e_restart_urcap (void);
 
         // ---- USEFUL FUNCTIONS ---- //
         Vector6d low_pass_filter(Vector6d input_vec);

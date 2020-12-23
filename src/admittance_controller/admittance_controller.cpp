@@ -31,15 +31,19 @@ admittance_control::admittance_control(
     trajectory_execution_subscriber = nh.subscribe("/admittance_controller/trajectory_execution", 1, &admittance_control::trajectory_execution_Callback, this);
     
     // ---- ROS SERVICE SERVERS ---- //
-    ur10e_freedrive_mode_service = nh.advertiseService("/admittance_controller/ur10e_freedrive_mode_service", &admittance_control::FreedriveMode_Service_Callback, this);
     admittance_controller_activation_service = nh.advertiseService("/admittance_controller/admittance_controller_activation_service", &admittance_control::Admittance_Controller_Activation_Service_Callback, this);
     change_admittance_parameters_service = nh.advertiseService("/admittance_controller/change_admittance_parameters_service", &admittance_control::Change_Admittance_Parameters_Service_Callback, this);
+    ur10e_freedrive_mode_service = nh.advertiseService("/admittance_controller/ur10e_freedrive_mode_service", &admittance_control::FreedriveMode_Service_Callback, this);
+    ur10e_restart_urcap_service = nh.advertiseService("/admittance_controller/ur10e_restart_urcap_service", &admittance_control::Restart_URCap_Service_Callback, this);
+
 
     // ---- ROS SERVICE CLIENTS ---- //
-    switch_controller_client = nh.serviceClient<controller_manager_msgs::SwitchController>("/controller_manager/switch_controller");
-    list_controllers_client  = nh.serviceClient<controller_manager_msgs::ListControllers>("/controller_manager/list_controllers");
-    zero_ft_sensor_client    = nh.serviceClient<std_srvs::Trigger>("/ur_hardware_interface/zero_ftsensor");
-
+    switch_controller_client    = nh.serviceClient<controller_manager_msgs::SwitchController>("/controller_manager/switch_controller");
+    list_controllers_client     = nh.serviceClient<controller_manager_msgs::ListControllers>("/controller_manager/list_controllers");
+    zero_ft_sensor_client       = nh.serviceClient<std_srvs::Trigger>("/ur_hardware_interface/zero_ftsensor");
+    ur10e_resend_robot_program  = nh.serviceClient<std_srvs::Trigger>("/ur_hardware_interface/resend_robot_program");
+    ur10e_play_urcap            = nh.serviceClient<std_srvs::Trigger>("/ur_hardware_interface/dashboard/play");
+    
     // ---- ROS ACTIONS ---- //
     trajectory_client = new actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction>(topic_action_trajectory_publisher, true);
 
@@ -179,18 +183,6 @@ void admittance_control::trajectory_execution_Callback (const admittance_control
 //-------------------------------------------------- SERVICES CALLBACK --------------------------------------------------//
 
 
-bool admittance_control::FreedriveMode_Service_Callback (std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res) {
-
-    freedrive_mode_request = req.data;
-
-    if (freedrive_mode_request) {start_freedrive_mode();}
-    else {stop_freedrive_mode();}
-    
-    res.success = true;
-    return true;
-
-}
-
 bool admittance_control::Admittance_Controller_Activation_Service_Callback (std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res) {
     
     // Activate / Deactivate Admittance Controller
@@ -227,6 +219,35 @@ bool admittance_control::Change_Admittance_Parameters_Service_Callback (admittan
 
     res.success = true;
     return true;
+}
+
+bool admittance_control::FreedriveMode_Service_Callback (std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res) {
+
+    freedrive_mode_request = req.data;
+
+    if (freedrive_mode_request) {
+
+        start_freedrive_mode();
+        res.message = "Freedrive Mode Activated";
+        
+    } else {
+        
+        stop_freedrive_mode();
+        res.message = "Freedrive Mode Deactivated";
+        
+    }
+    
+    res.success = true;
+    return true;
+
+}
+
+bool admittance_control::Restart_URCap_Service_Callback (std_srvs::Trigger::Request &req, std_srvs::Trigger::Response &res) {
+
+    ur10e_restart_urcap();
+
+    return true;
+
 }
 
 
@@ -1050,10 +1071,14 @@ void admittance_control::start_freedrive_mode (void) {
     // Turn ON FreedriveMode
     ROS_WARN("FreeDrive Mode Activated");
     
+    // Launch Freedrive Mode Script
     ur10e_send_script_command("def prog(): \
     freedrive_mode() \
     sleep(3600) \
     end");
+
+    // Call zero_ftsensor service
+    zero_ft_sensor();
 
     // Deactivate Admittance Controller
     admittance_control_request = false;
@@ -1065,14 +1090,38 @@ void admittance_control::stop_freedrive_mode (void) {
     // Turn OFF FreedriveMode
     ROS_WARN("FreeDrive Mode Dectivated\n");
 
+    // Stop Freedrive Mode
     ur10e_send_script_command("def prog(): \
     end");
+
+    // Restart URCap
+    ur10e_restart_urcap();
 
     // Activate Admittance Controller
     zero_ft_sensor();
     admittance_control_request = true;
 
 }
+
+void admittance_control::ur10e_restart_urcap (void) {
+
+    ros::Duration(2).sleep();
+
+    // Restart URCap
+    if (ur10e_resend_robot_program.call(ur10e_resend_robot_program_srv)) {}
+    else {ROS_ERROR("Failed to Call Service: \"/ur_hardware_interface/resend_robot_program\"");}
+
+    ros::Duration(2).sleep();
+
+    if (ur10e_resend_robot_program.call(ur10e_resend_robot_program_srv)) {ROS_INFO("Restarting URCAP Succesfull");}
+    else {ROS_ERROR("Failed to Call Service: \"/ur_hardware_interface/resend_robot_program\"");}
+
+    // Play URCap
+    // if (ur10e_play_urcap.call(ur10e_play_urcap_srv)) {ROS_INFO("Play URCAP Succesfull");} 
+    // else {ROS_ERROR("Failed to Call Service: \"/ur_hardware_interface/dashboard/play\"");}
+
+}
+
 
 
 //--------------------------------------------------- UTILS FUNCTIONS ---------------------------------------------------//
