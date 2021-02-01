@@ -19,11 +19,13 @@ admittance_control::admittance_control(
     if (!nh.param<bool>("/admittance_controller_Node/use_feedback_velocity", use_feedback_velocity, false)) {ROS_ERROR("Couldn't retrieve the Feedback Velocity value.");}
     if (!nh.param<bool>("/admittance_controller_Node/inertia_reduction", inertia_reduction, false)) {ROS_ERROR("Couldn't retrieve the Inertia Reduction value.");}
     if (!nh.param<bool>("/admittance_controller_Node/use_ur_real_robot", use_ur_real_robot, false)) {ROS_ERROR("Couldn't retrieve the Use Real Robot value.");}
+    if (!nh.param<bool>("/admittance_controller_Node/auto_start_admittance", admittance_control_request, true)) {ROS_ERROR("Couldn't retrieve the Auto Start Admittance value.");}
     
     // ---- ROS PUBLISHERS ---- //
     joint_trajectory_publisher = nh.advertise<trajectory_msgs::JointTrajectory>(topic_joint_trajectory_publisher, 1);
     joint_group_vel_controller_publisher = nh.advertise<std_msgs::Float64MultiArray>(topic_joint_group_vel_controller_publisher, 1);
     ur10e_script_command_publisher = nh.advertise<std_msgs::String>("/ur_hardware_interface/script_command",1);
+    cartesian_position_publisher = nh.advertise<geometry_msgs::Pose>("/ur_cartesian_pose",1);
     
     // ---- ROS SUBSCRIBERS ---- //
     force_sensor_subscriber = nh.subscribe(topic_force_sensor_subscriber, 1, &admittance_control::force_sensor_Callback, this);
@@ -59,7 +61,6 @@ admittance_control::admittance_control(
     force_callback = false;
     joint_state_callback = false;
     freedrive_mode_request = false;
-    admittance_control_request = true;
     trajectory_execution_request = false;
     simple_debug = true;
     complete_debug = false;
@@ -157,6 +158,9 @@ void admittance_control::joint_states_Callback (const sensor_msgs::JointState::C
 
     for (unsigned int i = 0; i < joint_state.position.size(); i++) {joint_position[i] = joint_state.position[i];}
     for (unsigned int i = 0; i < joint_state.velocity.size(); i++) {joint_velocity[i] = joint_state.velocity[i];}
+
+    // Covert Joint Position in Cartesian (geomerty_msgs::Pose)
+    publish_cartesian_position(joint_position, joint_velocity);
 
     // ---- DEBUG ---- //
     if (complete_debug) ROS_INFO_THROTTLE_NAMED(2, "Joint Position", "joint position: %.2f %.2f %.2f %.2f %.2f %.2f", joint_position[0], joint_position[1], joint_position[2], joint_position[3], joint_position[4], joint_position[5]);
@@ -1126,6 +1130,29 @@ void admittance_control::ur10e_restart_urcap (void) {
 
 //--------------------------------------------------- UTILS FUNCTIONS ---------------------------------------------------//
 
+
+void admittance_control::publish_cartesian_position (std::vector<double> joint_position,  std::vector<double> joint_velocity) {
+
+    Eigen::Matrix4d ee_position = compute_fk (joint_position, joint_velocity);
+
+    Eigen::Matrix3d rotation_matrix = ee_position.block<3,3>(0,0);
+    Eigen::Vector3d translation_vector = ee_position.block<3,1>(0,3);
+    Eigen::Quaterniond rotation_quaternion(rotation_matrix);
+
+    geometry_msgs::Pose pose;
+
+    pose.position.x = translation_vector[0];
+    pose.position.y = translation_vector[1];
+    pose.position.z = translation_vector[2];
+
+    pose.orientation.x = rotation_quaternion.x();
+    pose.orientation.y = rotation_quaternion.y();
+    pose.orientation.z = rotation_quaternion.z();
+    pose.orientation.w = rotation_quaternion.w();
+
+    cartesian_position_publisher.publish(pose);
+
+}
 
 Vector6d admittance_control::low_pass_filter(Vector6d input_vec) {
 

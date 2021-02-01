@@ -14,6 +14,7 @@
 #include <std_msgs/Float64MultiArray.h>
 #include <std_msgs/String.h>
 #include <geometry_msgs/WrenchStamped.h>
+#include <geometry_msgs/Pose.h>
 #include <trajectory_msgs/JointTrajectory.h>
 #include <sensor_msgs/JointState.h>
 
@@ -110,6 +111,7 @@ class admittance_control {
         // ---- PUBLISHERS & SUBSCRIBERS ---- //
         ros::Subscriber force_sensor_subscriber, joint_states_subscriber, trajectory_execution_subscriber;
         ros::Publisher joint_trajectory_publisher, joint_group_vel_controller_publisher, ur10e_script_command_publisher;
+        ros::Publisher cartesian_position_publisher;
 
         // ---- ROS SERVICE CLIENTS ---- //
         ros::ServiceClient switch_controller_client, list_controllers_client, zero_ft_sensor_client, ur10e_resend_robot_program, ur10e_play_urcap;
@@ -184,6 +186,7 @@ class admittance_control {
         void ur10e_restart_urcap (void);
 
         // ---- USEFUL FUNCTIONS ---- //
+        void publish_cartesian_position(std::vector<double> joint_position, std::vector<double> joint_velocity);
         Vector6d low_pass_filter(Vector6d input_vec);
         int sign (double num);
 
