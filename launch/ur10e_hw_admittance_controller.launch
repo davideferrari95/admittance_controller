@@ -13,9 +13,9 @@
 
   <!--  Load the URDF, SRDF and other .yaml configuration files on the ROS Param Server  -->
 
-  <include if="$(arg load_robot_model)" file="$(find ur10_e_moveit_config)/launch/planning_context.launch">
+  <include if="$(arg load_robot_model)" file="$(find ur10e_moveit_config)/launch/planning_context.launch">
     <arg name="load_robot_description" value="true"/>
-    <arg name="limited" value="false"/>
+    <!-- <arg name="limited" value="false"/> -->
   </include>
 
 
